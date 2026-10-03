@@ -298,6 +298,8 @@ private:
             const u64 optimized = EdenClockNs();
             emitter.eden_pending_sites.clear();
             const auto emitted = emitter.Emit(ir_block, false);
+            if (eden_jit_block)
+                eden_jit_block(unsigned(conf.processor_id) + 16, descriptor.Value(), reinterpret_cast<const void*>(emitted.entrypoint), emitted.size);
             eden_state.store(previous, std::memory_order_seq_cst);
             EdenReportCompile(descriptor, start, translated, optimized);
             eden_space.store(block_of_code.SpaceRemaining(), std::memory_order_relaxed);
@@ -349,6 +351,8 @@ private:
         Optimization::Optimize(ir_block, conf, polyfill_options);
         emitter.eden_pending_sites.clear();
         const auto emitted = emitter.Emit(ir_block, false);
+        if (eden_jit_block)
+            eden_jit_block(unsigned(conf.processor_id) + 16, descriptor.Value(), reinterpret_cast<const void*>(emitted.entrypoint), emitted.size);
         eden_pre_state.store(EdenOutside, std::memory_order_seq_cst);
         eden_space.store(block_of_code.SpaceRemaining(), std::memory_order_relaxed);
 

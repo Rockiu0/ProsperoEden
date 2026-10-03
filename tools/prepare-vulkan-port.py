@@ -140,7 +140,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {'''),
      '    static unsigned poll = 0;\n'
      '    static bool active = false;\n'
      '    if (!active && ::Eden::DevVulkan::trace_pipelines && (++poll & 255) == 0)\n'
-     '        active = std::filesystem::exists("/app0/sync-draws.txt");\n'
+     '        active = std::filesystem::exists("/app0/sync-draws.txt") || std::filesystem::exists("/mnt/sandbox/PPSA99008_000/app0/sync-draws.txt");\n'
      '    return active;\n'
      '}\n'
      'void SyncProbe(Scheduler& scheduler, const char* kind, const void* pipeline) {\n'
@@ -152,9 +152,43 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {'''),
      '    scheduler.Finish();\n'
      '}'),
     ('    prepared_pipeline = pipeline;\n', '    prepared_pipeline = pipeline;\n    probe_pipeline = pipeline;\n'),
+    # The probe also waits before a draw's preparation: a fault there comes from the work queued
+    # since the last draw (copies, blits, query resolves), not from this draw.
+    ('    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    prepared_pipeline = pipeline;',
+     '    SyncProbe(scheduler, "pre", pipeline);\n'
+     '    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    prepared_pipeline = pipeline;'),
     ('        }\n    });\n}\n\nvoid RasterizerVulkan::DrawIndirect() {',
-     '        }\n    });\n    SyncProbe(scheduler, "draw", probe_pipeline);\n}\n\nvoid RasterizerVulkan::DrawIndirect() {'),
+     '        }\n    });\n'
+     '    if (SyncProbeActive()) {\n'
+     '        const auto& ds = maxwell3d->draw_manager.draw_state;\n'
+     '        const auto& regs = maxwell3d->regs;\n'
+     '        char text[256];\n'
+     '        int at = std::snprintf(text, sizeof(text), "idx=%d topo=%u n=%u first=%u inst=%u base=%u ib=%llx..%llx fmt=%u vs=",\n'
+     '            int(is_indexed), unsigned(ds.topology), is_indexed ? ds.index_buffer.count : ds.vertex_buffer.count,\n'
+     '            is_indexed ? ds.index_buffer.first : ds.vertex_buffer.first, instance_count, ds.base_index,\n'
+     '            (unsigned long long)ds.index_buffer.StartAddress(), (unsigned long long)ds.index_buffer.EndAddress(),\n'
+     '            unsigned(ds.index_buffer.format));\n'
+     '        for (size_t i = 0; i < regs.vertex_streams.size() && at > 0 && at < int(sizeof(text)) - 40; ++i) {\n'
+     '            const auto& vs = regs.vertex_streams[i];\n'
+     '            if (!vs.enable) continue;\n'
+     '            at += std::snprintf(text + at, sizeof(text) - at, "%zu:%llx/%llx/%u ", i, (unsigned long long)vs.Address(),\n'
+     '                                (unsigned long long)regs.vertex_stream_limits[i].Address(), unsigned(vs.stride));\n'
+     '        }\n'
+     '        ::Eden::Report("drawp", text);\n'
+     '    }\n'
+     '    SyncProbe(scheduler, "draw", probe_pipeline);\n}\n\nvoid RasterizerVulkan::DrawIndirect() {'),
     ('void RasterizerVulkan::DrawTexture() {', 'void RasterizerVulkan::DrawTexture() {\n    SCOPE_EXIT { SyncProbe(scheduler, "draw_texture", nullptr); };'),
+    ('void RasterizerVulkan::DrawIndirect() {\n    const auto& params = maxwell3d->draw_manager.indirect_state;',
+     'void RasterizerVulkan::DrawIndirect() {\n    const auto& params = maxwell3d->draw_manager.indirect_state;\n'
+     '    if (SyncProbeActive()) {\n'
+     '        char text[200];\n'
+     '        std::snprintf(text, sizeof(text), "indirect idx=%d bytes=%d count=%d args=%llx count_at=%llx size=%zu max=%zu stride=%zu xfb=%u",\n'
+     '            int(params.is_indexed), int(params.is_byte_count), int(params.include_count),\n'
+     '            (unsigned long long)params.indirect_start_address, (unsigned long long)params.count_start_address,\n'
+     '            params.buffer_size, params.max_draw_counts, params.stride, unsigned(maxwell3d->regs.transform_feedback_enabled));\n'
+     '        ::Eden::Report("drawp", text);\n'
+     '    }\n'
+     '    SCOPE_EXIT { SyncProbe(scheduler, "draw_indirect", probe_pipeline); };'),
     ('void RasterizerVulkan::Clear(u32 layer_count) {', 'void RasterizerVulkan::Clear(u32 layer_count) {\n    SCOPE_EXIT { SyncProbe(scheduler, "clear", nullptr); };'),
     ('    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};\n    if (!pipeline) {\n        return;\n    }',
      '    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};\n    if (!pipeline) {\n        return;\n    }\n'
@@ -379,6 +413,8 @@ adapt('src/video_core/vulkan_common/vulkan_device.cpp', 'vulkan_device.cpp', [
      '        const u64 free_bytes = static_cast<u64>(static_cast<double>(free_memory()) * scale);\n'
      '        return device_access_memory > free_bytes ? device_access_memory - free_bytes : 0;\n'
      '    }\n'),
+    ('    extensions.transform_feedback =\n        features.transform_feedback.transformFeedback &&',
+     '    extensions.transform_feedback =\n        !::Eden::DevVulkan::disable_transform_feedback &&\n        features.transform_feedback.transformFeedback &&'),
     ('    extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer;',
      '    extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer &&\n'
      '        !::Eden::DevVulkan::disable_descriptor_buffer;'),

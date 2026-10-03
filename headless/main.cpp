@@ -49,6 +49,7 @@
 #include "performance.h"
 #include "stall_watchdog.h"
 #include "dev_vulkan.h"
+#include "io_bench.h"
 #include "../src/fastmem.h"
 #include "crash_report.h"
 #include "prosperoeden/frontend.h"
@@ -584,6 +585,15 @@ int main(int argc, char** argv) {
                 } else if (entry.starts_with("idle_spin_us=")) {
                     // Guest cores spin this long on their interrupt flag before sleeping (W1).
                     Eden::Performance::idle_spin_iterations = static_cast<unsigned>(std::stoul(entry.substr(13)) * 50);
+                } else if (entry.starts_with("timing_prio=")) {
+                    // HostTiming and VSyncThread priority (EDEN_THREAD_PRIORITY reports the result).
+                    Eden::Performance::timing_priority = std::stoi(entry.substr(12));
+                } else if (entry == "keep_60=on") {
+                    // Keep 60 FPS for every game, whatever its own setting (display_refresh.h).
+                    Eden::Performance::keep_60_all = true;
+                } else if (entry.starts_with("compose_delay_us=")) {
+                    // Guest vsync signalled first, composition N us later (VI conductor).
+                    Eden::Performance::compose_delay_us = std::stoi(entry.substr(17));
                 } else if (entry.starts_with("pc_core=") && entry.size() == 9 && entry[8] >= '0' && entry[8] <= '3') {
                     // Host PC samples from this guest core instead of core 0 (with --pc-sample).
                     Eden::Performance::pc_sample_core = static_cast<unsigned>(entry[8] - '0');
@@ -614,6 +624,12 @@ int main(int argc, char** argv) {
                 } else if (entry == "graphics_usage=driver") {
                     // The caches' "memory in use" as the driver counts it (performance.h).
                     Eden::Performance::graphics_usage_from_pool = false;
+                } else if (entry == "reactive_flushing=off" || entry == "reactive_flushing=on") {
+                    // Upstream's default is on except on Android: CPU reads of GPU-written pages
+                    // download them first (Settings::values.use_reactive_flushing).
+                    Settings::values.use_reactive_flushing.SetValue(entry.ends_with("on"));
+                    std::printf("EDEN_DEV_REACTIVE_FLUSHING %u\n",
+                                unsigned(Settings::values.use_reactive_flushing.GetValue()));
                 } else if (entry == "gpu_accuracy=low") {
                     // Nothing calls UpdateGPUAccuracy() here; set the live value too.
                     Settings::values.gpu_accuracy.SetValue(Settings::GpuAccuracy::Low);
@@ -637,6 +653,18 @@ int main(int argc, char** argv) {
                     setenv(entry.substr(4, split - 4).c_str(), entry.c_str() + split + 1, 1);
                 } else if (entry == "sparse=off") {
                     Eden::DevVulkan::disable_sparse = true;
+                } else if (entry.starts_with("kspin=")) {
+                    Eden::Performance::kernel_spin_iterations = static_cast<unsigned>(std::stoul(entry.substr(6)));
+                } else if (entry == "swap_trace=on") {
+                    Eden::Performance::trace_swap_callers = true;
+                } else if (entry == "dump_code=on") {
+                    Eden::Performance::dump_code = true;
+                } else if (entry == "prio_fast=on") {
+                    Eden::Performance::priority_fast = true;
+                } else if (entry == "io_bench=on") {
+                    Eden::IoBench::enabled = true;
+                } else if (entry == "xfb=off") {
+                    Eden::DevVulkan::disable_transform_feedback = true;
                 } else if (entry == "multirange=off") {
                     Eden::DevVulkan::disable_multi_range = true;
                 } else if (entry == "custom_border=off") {
@@ -753,6 +781,9 @@ int main(int argc, char** argv) {
             Eden::Display::output_millihertz.store(0);
             setenv(Eden::Display::kVulkanSwitch, refresh ? "1" : "0", 1);
             Eden::Display::game_millihertz.store(60000);
+            // Library > Game settings > Keep 60 FPS (display_refresh.h).
+            Eden::Display::keep_60.store(game_video.keep_60 == 1 || Eden::Performance::keep_60_all.load());
+            Eden::Display::keep_60_frames.store(0);
             Eden::Display::skipped_frames.store(0);
             // The size of the picture the session puts out (Settings > Video > Output resolution).
             Eden::Display::output_width.store(Eden::kOutputWidth[video.output]);
@@ -966,6 +997,7 @@ int main(int argc, char** argv) {
                 }
 #endif
                 passed(game ? "game_loaded" : "nro_loaded");
+                if (game && Eden::IoBench::enabled.exchange(false)) Eden::IoBench::Run(system, guest);
                 Eden::Report("loader", "Game loaded; initializing renderer");
 #ifdef EDEN_PS5_OPENGL
                 // Retain the failure, then release CPU readiness and complete normal
@@ -1054,8 +1086,8 @@ int main(int argc, char** argv) {
                         value = dev_guest_memory->Read32(address);
                         return true;
                     };
-                    std::printf("EDEN_MAIN_BASE main=%llx\n",
-                                static_cast<unsigned long long>(GetInteger(Core::FindMainModuleEntrypoint(process))));
+                    Eden::Performance::main_module_base = GetInteger(Core::FindMainModuleEntrypoint(process));
+                    std::printf("EDEN_MAIN_BASE main=%llx\n", Eden::Performance::main_module_base.load());
                 }
                 if (auto* process = system.ApplicationProcess();
                     process && (Eden::Watch::watch_range.size || Eden::Watch::dump_range.size)) {
@@ -1100,6 +1132,35 @@ int main(int argc, char** argv) {
                         code_end = info.m_address + info.m_size;
                     }
                     jit_list.Start(system.GetApplicationProcessProgramID(), build, code_start, code_end - code_start);
+#ifdef EDEN_DEV_PROFILE
+                    // dev-settings dump_code=on: every executable mapping of the game (main, sdk and
+                    // subsdk modules) to logs/code_dump.bin as records of address, size and bytes.
+                    if (Eden::Performance::dump_code.exchange(false)) {
+                        if (std::FILE* out = std::fopen(Eden::LogFile("code_dump.bin").c_str(), "wb")) {
+                            u64 address = 0, total = 0;
+                            std::vector<u8> bytes;
+                            for (unsigned guard = 0; guard < 100000; ++guard) {
+                                Kernel::KMemoryInfo info{};
+                                Kernel::Svc::PageInfo page{};
+                                if (process->GetPageTable().QueryInfo(&info, &page, address).IsError() || info.m_size == 0) break;
+                                if (info.m_state == Kernel::KMemoryState::Code) {
+                                    bytes.resize(info.m_size);
+                                    system.ApplicationMemory().ReadBlock(info.m_address, bytes.data(), bytes.size());
+                                    const u64 header[2]{info.m_address, info.m_size};
+                                    std::fwrite(header, sizeof(header), 1, out);
+                                    std::fwrite(bytes.data(), 1, bytes.size(), out);
+                                    total += info.m_size;
+                                }
+                                const u64 next = info.m_address + info.m_size;
+                                if (next <= address) break;
+                                address = next;
+                            }
+                            std::fclose(out);
+                            std::printf("EDEN_CODE_DUMP bytes=%llu entry=%llx\n", static_cast<unsigned long long>(total),
+                                        static_cast<unsigned long long>(code_start));
+                        }
+                    }
+#endif
                 }
                 Eden::TakeGuestFault(); // Nothing from an earlier session belongs to this one.
                 system.Run();

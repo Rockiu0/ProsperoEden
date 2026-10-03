@@ -722,6 +722,41 @@ write_derived("${PORT_BUILD_DIR}/physical_core.cpp"
     "#include \"${EDEN_PORT_DIR}/guest_fault.h\"\n#include \"${EDEN_PORT_DIR}/performance.h\"\n#include \"core/arm/debug.h\"\n${physical_core_source}")
 list(REMOVE_ITEM core_sources "hle/kernel/physical_core.cpp")
 list(APPEND core_sources "${PORT_BUILD_DIR}/physical_core.cpp")
+# Guest kernel spin locks spin before blocking (performance.h kernel_spin_iterations).
+file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/kernel/k_spin_lock.cpp" spin_source)
+set(spin_old "void KSpinLock::Lock() {\n    m_lock.lock();\n}")
+string(FIND "${spin_source}" "${spin_old}" spin_at)
+if(spin_at LESS 0)
+    message(FATAL_ERROR "Pinned KSpinLock::Lock changed")
+endif()
+string(REPLACE "${spin_old}" "void KSpinLock::Lock() {\n    ::Eden::Performance::SpinAcquire(m_lock);\n}" spin_source "${spin_source}")
+write_derived("${PORT_BUILD_DIR}/k_spin_lock.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${spin_source}")
+list(REMOVE_ITEM core_sources "hle/kernel/k_spin_lock.cpp")
+list(APPEND core_sources "${PORT_BUILD_DIR}/k_spin_lock.cpp")
+if(EDEN_DEV_PROFILE)
+    # Guest SVCs per core and number, with the time inside each (EDEN_DEV_SVC).
+    file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/kernel/svc.cpp" svc_source)
+    set(svc_old "    if (process.Is64Bit()) {\n        Call64(system, imm, args);\n    } else {\n        Call32(system, imm, args);\n    }\n")
+    string(FIND "${svc_source}" "${svc_old}" svc_at)
+    if(svc_at LESS 0)
+        message(FATAL_ERROR "Pinned SVC dispatch changed")
+    endif()
+    string(REPLACE "${svc_old}" "    const auto eden_core = kernel.CurrentPhysicalCoreIndex();\n    const long long eden_start = ::Eden::Performance::NowNs();\n${svc_old}    if (eden_core < 4 && imm < 128) {\n        ::Eden::Performance::svc_calls[eden_core][imm].fetch_add(1, std::memory_order_relaxed);\n        ::Eden::Performance::svc_ns[eden_core][imm].fetch_add(static_cast<unsigned long long>(::Eden::Performance::NowNs() - eden_start), std::memory_order_relaxed);\n    }\n" svc_source "${svc_source}")
+    write_derived("${PORT_BUILD_DIR}/svc.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${svc_source}")
+    list(REMOVE_ITEM core_sources "hle/kernel/svc.cpp")
+    list(APPEND core_sources "${PORT_BUILD_DIR}/svc.cpp")
+    # svcSetThreadPriority: old and new priorities (EDEN_DEV_PRIORITY), prio_fast=on shortcut.
+    file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/kernel/svc/svc_thread.cpp" svc_thread_source)
+    set(priority_old "    // Set the thread priority.\n    thread->SetBasePriority(system.Kernel(), priority);\n")
+    string(FIND "${svc_thread_source}" "${priority_old}" priority_at)
+    if(priority_at LESS 0)
+        message(FATAL_ERROR "Pinned svcSetThreadPriority changed")
+    endif()
+    string(REPLACE "${priority_old}" "    {\n        const s32 eden_old = thread->GetBasePriority();\n        ::Eden::Performance::CountPriority(eden_old, priority, thread->GetId() == GetCurrentThread(system.Kernel()).GetId());\n        if (eden_old == priority && ::Eden::Performance::priority_fast.load(std::memory_order_relaxed))\n            R_SUCCEED();\n    }\n${priority_old}" svc_thread_source "${svc_thread_source}")
+    write_derived("${PORT_BUILD_DIR}/svc_thread.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${svc_thread_source}")
+    list(REMOVE_ITEM core_sources "hle/kernel/svc/svc_thread.cpp")
+    list(APPEND core_sources "${PORT_BUILD_DIR}/svc_thread.cpp")
+endif()
 if(EDEN_DEV_PROFILE)
     # Guest-visible waits: syncpoint event registration to signal (GPU-pipeline latency
     # the game waits on) and buffer-queue dequeue waits (presentation back-pressure).
@@ -741,10 +776,111 @@ if(EDEN_DEV_PROFILE)
     if(producer_at LESS 0)
         message(FATAL_ERROR "Pinned buffer queue dequeue changed")
     endif()
-    string(REPLACE "${producer_old}" "        const auto dequeue_start = ::Eden::Performance::NowNs();\n${producer_old}\n        ::Eden::Performance::AddSince(::Eden::Performance::guest_dequeue_wait, dequeue_start);" producer_source "${producer_source}")
-    write_derived("${PORT_BUILD_DIR}/buffer_queue_producer.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${producer_source}")
-    list(REMOVE_ITEM core_sources "hle/service/nvnflinger/buffer_queue_producer.cpp")
-    list(APPEND core_sources "${PORT_BUILD_DIR}/buffer_queue_producer.cpp")
+    string(REPLACE "${producer_old}" "        const auto dequeue_start = ::Eden::Performance::NowNs();\n${producer_old}\n        ::Eden::Performance::AddSince(::Eden::Performance::guest_dequeue_wait, dequeue_start);\n        ::Eden::Performance::RecordDequeued();" producer_source "${producer_source}")
+    set(queue_old "        item.swap_interval = swap_interval;")
+    string(FIND "${producer_source}" "${queue_old}" queue_at)
+    if(queue_at LESS 0)
+        message(FATAL_ERROR "Pinned buffer queue swap interval changed")
+    endif()
+    string(REPLACE "${queue_old}" "${queue_old}\n        ::Eden::Performance::RecordQueue(swap_interval);"
+        producer_source "${producer_source}")
+    # swap_trace=on: each change of the present interval a game queues, with the game's call chain.
+    string(REPLACE "        ::Eden::Performance::RecordQueue(swap_interval);"
+        "        ::Eden::Performance::RecordQueue(swap_interval);
+        if (::Eden::Performance::trace_swap_callers.load(std::memory_order_relaxed)) {
+            static int eden_last_interval = -1;
+            static unsigned eden_reports = 0;
+            if (swap_interval != eden_last_interval && eden_reports < 400) {
+                ++eden_reports;
+                std::string frames;
+                if (auto* requester = static_cast<Kernel::KThread*>(::Eden::Performance::hle_request_thread); requester && eden_reports <= 5)
+                    for (const auto& entry : Core::GetBacktrace(requester))
+                        frames += fmt::format(\" {}+{:X}\", entry.module, entry.offset);
+                LOG_WARNING(Service_VI, \"EDEN_SWAP_CHANGE from={} to={} ms={} frames={}\", eden_last_interval, swap_interval,
+                            ::Eden::Performance::NowNs() / 1000000, frames);
+            }
+            eden_last_interval = swap_interval;
+            // A tested game's frame-rate controller (its main module at 0x80174000): the GPU time it
+            // measures with NVN timestamps is at [[0x8416FAD0] + 8] + 0xC168, in nanoseconds.
+            if (auto* requester = static_cast<Kernel::KThread*>(::Eden::Performance::hle_request_thread)) {
+                auto& memory = requester->GetOwnerProcess()->GetMemory();
+                static unsigned long long eden_frames = 0, eden_over = 0, eden_sum = 0, eden_max = 0, eden_asks = 0;
+                static unsigned long long eden_wait_sum = 0, eden_wait_max = 0, eden_match = 0, eden_mode30 = 0;
+                static unsigned long long eden_period_sum = 0, eden_period_max = 0, eden_last_start = 0;
+                // Main-module offsets (the module loads at a different address each boot).
+                const u64 module_base = ::Eden::Performance::main_module_base.load(std::memory_order_relaxed);
+                const auto valid = [&](u64 address, u64 size) { return address && memory.IsValidVirtualAddressRange(address, size); };
+                const u64 graphics = valid(module_base + 0x3FFBAD0, 8) ? memory.Read64(module_base + 0x3FFBAD0) : 0;
+                const u64 context = valid(graphics + 8, 8) ? memory.Read64(graphics + 8) : 0;
+                if (valid(context + 0x4C8, 8) && valid(context + 0xC168, 8)) {
+                const u64 gpu_ns = memory.Read64(context + 0xC168);
+                const u32 wait_bits = memory.Read32(context + 0x4C8);
+                float wait_s = 0;
+                std::memcpy(&wait_s, &wait_bits, 4);
+                const u32 game_interval = memory.Read32(context + 0xC0A8);
+                const u32 mode = memory.Read32(context + 0x4D0);
+                const u64 frame_start = valid(module_base + 0x3FFBAA8, 8) ? memory.Read64(module_base + 0x3FFBAA8) : 0;
+                if (eden_last_start && frame_start > eden_last_start) {
+                    const u64 period = frame_start - eden_last_start;
+                    eden_period_sum += period;
+                    if (period > eden_period_max) eden_period_max = period;
+                }
+                eden_last_start = frame_start;
+                const u64 wait_us = static_cast<u64>(wait_s * 1e6f);
+                eden_wait_sum += wait_us;
+                if (wait_us > eden_wait_max) eden_wait_max = wait_us;
+                if (game_interval == static_cast<u32>(swap_interval)) ++eden_match;
+                if (mode == 1) ++eden_mode30;
+                ++eden_frames;
+                eden_sum += gpu_ns;
+                if (gpu_ns >= 16666667) ++eden_over;
+                if (gpu_ns > eden_max) eden_max = gpu_ns;
+                if (swap_interval == 2) ++eden_asks;
+                if (eden_frames == 120) {
+                    LOG_WARNING(Service_VI, \"EDEN_GAME_FRAME graphics={:X} context={:X} gpu_avg_us={} gpu_max_us={} gpu_over={} asked_30={} mode30={} interval_match={} wait_avg_us={} wait_max_us={} period_avg_us={} period_max_us={}\",
+                                graphics, context, eden_sum / eden_frames / 1000, eden_max / 1000, eden_over, eden_asks, eden_mode30, eden_match,
+                                eden_wait_sum / eden_frames, eden_wait_max, eden_period_sum / eden_frames / 1000, eden_period_max / 1000);
+                    eden_frames = eden_over = eden_sum = eden_max = eden_asks = 0;
+                    eden_wait_sum = eden_wait_max = eden_match = eden_mode30 = eden_period_sum = eden_period_max = 0;
+                }
+                }
+            }
+        }"
+        producer_source "${producer_source}")
+    # Written with Keep 60 FPS below (buffer_queue_producer.cpp), one file for both.
+    set(dev_producer_source "#include \"${EDEN_PORT_DIR}/performance.h\"\n#include \"core/arm/debug.h\"\n#include \"core/hle/kernel/k_thread.h\"\n#include \"core/hle/kernel/k_process.h\"\n#include \"core/memory.h\"\n${producer_source}")
+    # Guest vsync pacing (multicore): composition-event lateness, VSyncThread wake-up
+    # latency and composition time.
+    file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/vi/conductor.cpp" conductor_source)
+    foreach(conductor_old IN ITEMS "                m_signal.Set();" "        m_signal.Wait();"
+            "void Conductor::ProcessVsync() {")
+        string(FIND "${conductor_source}" "${conductor_old}" conductor_at)
+        if(conductor_at LESS 0)
+            message(FATAL_ERROR "Pinned VI conductor changed")
+        endif()
+    endforeach()
+    string(REPLACE "                m_signal.Set();"
+        "                ::Eden::Performance::RecordVsyncSignal(ns_late.count());\n                m_signal.Set();"
+        conductor_source "${conductor_source}")
+    string(REPLACE "        m_signal.Wait();"
+        "        m_signal.Wait();\n        ::Eden::Performance::RecordVsyncWake();" conductor_source "${conductor_source}")
+    string(REPLACE "void Conductor::ProcessVsync() {"
+        "void Conductor::ProcessVsync() {\n    ::Eden::Performance::Timer compose_timer(::Eden::Performance::vsync_compose);"
+        conductor_source "${conductor_source}")
+    # Written with the release's own conductor change below (vi_conductor.cpp), one file for both.
+    set(dev_conductor_source "#include <thread>\n#include \"${EDEN_PORT_DIR}/performance.h\"\n${conductor_source}")
+    file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/nvnflinger/hardware_composer.cpp" composer_source)
+    set(composer_old "            has_acquired_buffer = true;")
+    string(FIND "${composer_source}" "${composer_old}" composer_at)
+    if(composer_at LESS 0)
+        message(FATAL_ERROR "Pinned hardware composer acquire changed")
+    endif()
+    string(REPLACE "${composer_old}"
+        "${composer_old}\n            ::Eden::Performance::composer_acquired.fetch_add(1, std::memory_order_relaxed);"
+        composer_source "${composer_source}")
+    write_derived("${PORT_BUILD_DIR}/hardware_composer.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${composer_source}")
+    list(REMOVE_ITEM core_sources "hle/service/nvnflinger/hardware_composer.cpp")
+    list(APPEND core_sources "${PORT_BUILD_DIR}/hardware_composer.cpp")
     # Guest asset streaming: time and bytes of fsp-srv IFile/IStorage backend reads.
     file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/filesystem/fsp/fs_i_file.cpp" fs_file_source)
     set(fs_file_old "    R_RETURN(\n        backend->Read(reinterpret_cast<size_t*>(out_size.Get()), offset, out_buffer.data(), size));")
@@ -804,6 +940,10 @@ if(EDEN_DEV_PROFILE)
     # return chain, from its context saved at svcSendSyncRequest (boot-race probe).
     string(REPLACE "            ::Eden::Performance::RecordHle(service_name, ctx.GetCommand(), ::Eden::Performance::NowNs() - hle_start);\n"
         "            ::Eden::Performance::RecordHle(service_name, ctx.GetCommand(), ::Eden::Performance::NowNs() - hle_start);\n            if (::Eden::Performance::trace_fs_callers.load(std::memory_order_relaxed) && std::string_view{service_name} == \"IFileSystem\") {\n                std::string frames;\n                for (const auto& entry : Core::GetBacktrace(&ctx.GetThread()))\n                    frames += fmt::format(\" {}+{:X}\", entry.module, entry.offset);\n                LOG_WARNING(Service_FS, \"EDEN_FS_CALLER command={} thread={} name={} frames={}\", ctx.GetCommand(),\n                            ctx.GetThread().GetThreadId(), Core::GetThreadName(&ctx.GetThread()).value_or(\"-\"), frames);\n            }\n"
+        hle_source "${hle_source}")
+    # The requesting guest thread, for the present-interval caller probe (buffer_queue_producer).
+    string(REPLACE "            const auto hle_start = ::Eden::Performance::NowNs();\n"
+        "            const auto hle_start = ::Eden::Performance::NowNs();\n            ::Eden::Performance::hle_request_thread = &ctx.GetThread();\n"
         hle_source "${hle_source}")
     write_derived("${PORT_BUILD_DIR}/hle_service.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n#include \"core/arm/debug.h\"\n${hle_source}")
     list(REMOVE_ITEM core_sources "hle/service/service.cpp")
@@ -1116,15 +1256,53 @@ set_property(TARGET core PROPERTY SOURCES "${core_sources}")
 # The rate of the vsync clock a game runs on (60 Hz, or what an FPS patch asks for: 120, 240) is
 # published for the renderer: frames a display has no refresh for are not presented
 # (headless/display_refresh.h).
-file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/vi/conductor.cpp" conductor_source)
-string(PREPEND conductor_source "#include \"${EDEN_PORT_DIR}/display_refresh.h\"\n")
+if(DEFINED dev_conductor_source)
+    set(conductor_source "${dev_conductor_source}")
+else()
+    file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/vi/conductor.cpp" conductor_source)
+endif()
+# Vsync composition delay (every build, multicore; performance.h compose_delay_us): signal the
+# guest vsync first and compose later, so a frame the game queues in response to the vsync is
+# latched at that same vsync.
+set(compose_old "    for (auto& [display_id, manager] : m_vsync_managers) {
+        m_container.ComposeOnDisplay(&m_swap_interval, &m_compose_speed_scale, display_id);
+        manager.SignalVsync(m_system.Kernel());
+    }")
+string(FIND "${conductor_source}" "${compose_old}" compose_at)
+if(compose_at LESS 0)
+    message(FATAL_ERROR "Pinned VI conductor composition loop changed")
+endif()
+string(REPLACE "${compose_old}" "    if (const int compose_delay = ::Eden::Performance::compose_delay_us.load(std::memory_order_relaxed);
+        compose_delay > 0 && m_system.IsMulticore()) {
+        for (auto& [display_id, manager] : m_vsync_managers) {
+            manager.SignalVsync(m_system.Kernel());
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(compose_delay));
+        for (auto& [display_id, manager] : m_vsync_managers) {
+            m_container.ComposeOnDisplay(&m_swap_interval, &m_compose_speed_scale, display_id);
+        }
+        return;
+    }
+${compose_old}" conductor_source "${conductor_source}")
+string(PREPEND conductor_source "#include \"${EDEN_PORT_DIR}/display_refresh.h\"\n#include <thread>\n#include \"${EDEN_PORT_DIR}/performance.h\"\n")
 eden_patch(conductor_source
     "    const f32 effective_fps = 60.f / static_cast<f32>(m_swap_interval);\n    return static_cast<s64>(speed_scale * (1000000000.f / effective_fps));"
     "    const f32 effective_fps = 60.f / static_cast<f32>(m_swap_interval);\n    ::Eden::Display::game_millihertz.store(static_cast<int>(effective_fps * 1000.f / speed_scale),\n                                           std::memory_order_relaxed);\n    return static_cast<s64>(speed_scale * (1000000000.f / effective_fps));")
 write_derived("${PORT_BUILD_DIR}/vi_conductor.cpp" "${conductor_source}")
+# Library > Game settings > Keep 60 FPS: a frame queued for 30 FPS is queued for 60
+# (headless/display_refresh.h, QueuedSwapInterval). The composer and the vsync clock both follow it.
+if(DEFINED dev_producer_source)
+    set(producer_source "${dev_producer_source}")
+else()
+    file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp" producer_source)
+endif()
+string(PREPEND producer_source "#include \"${EDEN_PORT_DIR}/display_refresh.h\"\n")
+eden_patch(producer_source "        item.swap_interval = swap_interval;"
+    "        item.swap_interval = ::Eden::Display::QueuedSwapInterval(swap_interval);")
+write_derived("${PORT_BUILD_DIR}/buffer_queue_producer.cpp" "${producer_source}")
 get_target_property(core_sources core SOURCES)
-list(REMOVE_ITEM core_sources hle/service/vi/conductor.cpp)
-list(APPEND core_sources "${PORT_BUILD_DIR}/vi_conductor.cpp")
+list(REMOVE_ITEM core_sources hle/service/vi/conductor.cpp hle/service/nvnflinger/buffer_queue_producer.cpp)
+list(APPEND core_sources "${PORT_BUILD_DIR}/vi_conductor.cpp" "${PORT_BUILD_DIR}/buffer_queue_producer.cpp")
 set_property(TARGET core PROPERTY SOURCES "${core_sources}")
 
 # Nvdrv sessions borrow process memory until their final handles are unmapped.
@@ -1743,8 +1921,11 @@ if(EDEN_PS5_OPENGL)
         list(APPEND video_sources "${MACRO_OUTPUT}")
     endif()
     file(READ "${PROJECT_SOURCE_DIR}/src/video_core/gpu_thread.h" gpu_thread_header)
+    # 256 entries (upstream: 4096). With 8, a heavy scene (a 3D platformer, ~37 submissions a
+    # frame) filled the queue mid-frame: the guest's render thread waited 0.6-0.8 s of every 5 s
+    # while the GPU worker sat idle 44% of the time, and the game dropped to 40-45 FPS.
     string(REPLACE "using CommandQueue = Common::SPSCQueue<CommandDataContainer>;"
-        "using CommandQueue = Common::SPSCQueue<CommandDataContainer, 8>;"
+        "using CommandQueue = Common::SPSCQueue<CommandDataContainer, 256>;"
         gpu_thread_header "${gpu_thread_header}")
     string(REPLACE "    ~ThreadManager();" "    ~ThreadManager();\n    void Stop() { thread.request_stop(); if (thread.joinable()) thread.join(); }" gpu_thread_header "${gpu_thread_header}")
     if(PS5_NATIVE)
@@ -1798,7 +1979,7 @@ if(EDEN_PS5_OPENGL)
             string(REPLACE "if (count <= 3) LOG_INFO(Render_OpenGL, \"EDEN_GPU_DISPATCH_"
                 "if (count <= 3 || ::Eden::Performance::BootTrace()) LOG_INFO(Render_OpenGL, \"EDEN_GPU_DISPATCH_"
                 gpu_worker "${gpu_worker}")
-            # Time guest-side back-pressure: pushes that found the 8-entry queue full.
+            # Time guest-side back-pressure: pushes that found the queue full.
             set(full_wait "    while (!stop_source.stop_requested() &&\n           !state.queue.TryEmplace(std::move(command_data), fence, block))\n        std::this_thread::sleep_for(std::chrono::microseconds(100));")
             string(FIND "${gpu_worker}" "${full_wait}" full_wait_offset)
             if(full_wait_offset LESS 0)
@@ -1899,6 +2080,15 @@ ${paths_source}")
     file(READ "${PROJECT_SOURCE_DIR}/src/common/thread.cpp" thread_source)
     string(REPLACE "void SetCurrentThreadName(const char* name) {"
         "void SetCurrentThreadName(const char* name) {\n    ::Eden::Performance::RegisterWorker(name);" thread_source "${thread_source}")
+    # Development timing_prio=N: give HostTiming and VSyncThread (VeryHigh) a real priority.
+    set(priority_old "void SetCurrentThreadPriority(ThreadPriority new_priority) {")
+    string(FIND "${thread_source}" "${priority_old}" priority_at)
+    if(priority_at LESS 0)
+        message(FATAL_ERROR "Pinned SetCurrentThreadPriority changed")
+    endif()
+    string(REPLACE "${priority_old}"
+        "${priority_old}\n    if (::Eden::Performance::ApplyThreadPriority(static_cast<unsigned>(new_priority))) return;"
+        thread_source "${thread_source}")
     write_derived("${PORT_BUILD_DIR}/thread.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${thread_source}")
     list(REMOVE_ITEM common_sources thread.cpp)
     list(APPEND common_sources "${PORT_BUILD_DIR}/thread.cpp")
@@ -2182,6 +2372,12 @@ endif()
 option(EDEN_DEV_PROFILE "Development-only autoboot, timed input replay and profiling" OFF)
 set(EDEN_DEV_PROFILE_TITLE "" CACHE STRING "Title ID the development profile boots and replays input for")
 option(EDEN_DEV_WAIT_CALLERS "Development-only bounded GPU-owner caller sampling" OFF)
+if(EDEN_DEV_PROFILE)
+    # std::condition_variable waits of the sampled guest core, by caller (performance.cpp).
+    target_link_options(eden-headless PRIVATE
+        "-Wl,--wrap=_ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE"
+        "-Wl,--wrap=_ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE")
+endif()
 if(EDEN_DEV_WAIT_CALLERS)
     if(NOT EDEN_DEV_PROFILE OR NOT PS5_NATIVE)
         message(FATAL_ERROR "Caller sampling requires the native development profile")

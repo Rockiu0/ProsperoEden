@@ -32,6 +32,18 @@ inline constexpr int kSettleSeconds = 5;
 // interval of 0, or a percentage of 60 Hz). Kept by the clock itself (Eden's vi/conductor.cpp,
 // derived in CMakeLists.txt).
 inline std::atomic<int> game_millihertz{60000};
+// Library > Game settings > Keep 60 FPS, set before a session starts: a frame the game queues
+// with swap interval 2 (30 FPS) is queued with 1, so it is shown at the next vsync and the vsync
+// clock stays at 60 Hz. For games that drop to 30 FPS on their own when a frame runs late and
+// move by real time: they stay at 60. A game made for
+// 30 FPS that steps a fixed 1/30 s a frame runs twice as fast with it.
+inline std::atomic<bool> keep_60{false};
+inline std::atomic<unsigned long long> keep_60_frames{0};  // frames it moved to 60 FPS
+inline int QueuedSwapInterval(int swap_interval) {
+    if (swap_interval != 2 || !keep_60.load(std::memory_order_relaxed)) return swap_interval;
+    keep_60_frames.fetch_add(1, std::memory_order_relaxed);
+    return 1;
+}
 // Frames left out since the session began (SkipFrame).
 inline std::atomic<unsigned> skipped_frames{0};
 

@@ -15,7 +15,7 @@
 //     "library": { "last_game": "Game [id].nsp", "recent": ["Game [id].nsp"] },
 //     "games": { "0100000000010000": { "console_mode": "handheld", "renderer": "opengl",
 //                                      "resolution": "0.75x", "upscaling_filter": "fsr",
-//                                      "refresh_rate": "120", "mods": false,
+//                                      "refresh_rate": "120", "keep_60": true, "mods": false,
 //                                      "mods_off": ["A mod's folder name"],
 //                                      "cheats_on": ["A mod's folder name#A cheat's name"] } }
 //   }
@@ -302,6 +302,7 @@ struct GameSettings {
     int resolution = -1;        // index into kResolutionKeys
     int upscaling_filter = -1;  // index into kUpscalingFilterKeys
     int refresh = -1;           // index into kRefreshKeys
+    int keep_60 = -1;           // 1: Keep 60 FPS (display_refresh.h); only per game, -1 is off
 };
 inline constexpr const char* kRendererKeys[] = {"opengl", "vulkan"};
 
@@ -317,6 +318,9 @@ inline GameSettings LoadGameSettings(uint64_t title_id, const std::string& file 
     result.upscaling_filter = KeyIndex(key("upscaling_filter"), kUpscalingFilterKeys,
                                        int(std::size(kUpscalingFilterKeys)), -1);
     result.refresh = KeyIndex(key("refresh_rate"), kRefreshKeys, int(std::size(kRefreshKeys)), -1);
+    const Json::json_pointer keep(base + "/keep_60");
+    if (document.contains(keep) && document.at(keep).is_boolean() && document.at(keep).get<bool>())
+        result.keep_60 = 1;
     return result;
 }
 
@@ -337,6 +341,8 @@ inline bool SaveGameSettings(uint64_t title_id, const GameSettings& value, const
     store("resolution", value.resolution, kResolutionKeys);
     store("upscaling_filter", value.upscaling_filter, kUpscalingFilterKeys);
     store("refresh_rate", value.refresh, kRefreshKeys);
+    if (value.keep_60 == 1) game["keep_60"] = true;
+    else game.erase("keep_60");
     return Settings::Write(document, file);
 }
 

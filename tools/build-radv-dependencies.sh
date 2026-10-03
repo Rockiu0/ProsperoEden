@@ -38,6 +38,7 @@ PY
 bash "$vulkan/tools/setup-native-dependencies.sh"
 bash "$vulkan/tools/build-radv.sh" release
 python3 "$root/tools/patch-radv-wsi.py"
+python3 "$root/tools/patch-radv-gs-compute.py"
 bash "$vulkan/tools/build-radv.sh" release
 sha256sum "$vulkan/.deps/work/radv-src/src/vulkan/wsi/wsi_common_videoout.c" \
     > "$vulkan/.deps/native/radv-release/EDEN_WSI_SHA256"

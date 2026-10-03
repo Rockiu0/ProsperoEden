@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -87,6 +88,34 @@ inline std::atomic<unsigned long long> guest_fs_file_bytes{}, guest_fs_storage_b
 // Guest svcSendSyncRequest latency (queueing + HLE handling), and HLE handling time per
 // service command (RecordHle, reported as EDEN_DEV_HLE).
 inline Totals guest_ipc_wait;
+// Development: guest SVCs per guest core and SVC number, calls and nanoseconds inside the call
+// (a wait that switches the core to another guest thread includes that thread's run).
+inline std::array<std::array<std::atomic<unsigned long long>, 128>, 4> svc_calls{}, svc_ns{};
+// Guest kernel spin locks (the scheduler lock above all): PAUSE iterations spent retrying before
+// blocking in the host mutex. A 3D platformer's levels change thread priorities ~22,000 times a
+// second and yield ~25,000 times on the other cores; each contended std::mutex then slept and
+// woke through the console kernel (~35% of guest core 0). dev-settings kspin=N overrides it.
+inline std::atomic<unsigned> kernel_spin_iterations{4000};
+// Acquires a host mutex the guest cores contend for (the scheduler's spin lock) by retrying for kernel_spin_iterations before blocking in the console kernel.
+template <typename Mutex>
+inline void SpinAcquire(Mutex& mutex) {
+    const unsigned spins = kernel_spin_iterations.load(std::memory_order_relaxed);
+    for (unsigned i = 0; i < spins; ++i) {
+        if (mutex.try_lock()) return;
+        __builtin_ia32_pause();
+    }
+    mutex.lock();
+}
+// Development: svcSetThreadPriority by old and new base priority (0-63), on the calling thread
+// itself or another; dev-settings prio_fast=on returns at once when the base priority is unchanged.
+inline std::array<std::array<std::atomic<unsigned long long>, 64>, 64> priority_changes{};
+inline std::atomic<unsigned long long> priority_self{}, priority_other{};
+inline std::atomic<bool> priority_fast{false};
+inline void CountPriority(int old_priority, int new_priority, bool self) {
+    if (old_priority >= 0 && old_priority < 64 && new_priority >= 0 && new_priority < 64)
+        priority_changes[old_priority][new_priority].fetch_add(1, std::memory_order_relaxed);
+    (self ? priority_self : priority_other).fetch_add(1, std::memory_order_relaxed);
+}
 void RecordHle(const char* service, unsigned command, long long ns);
 inline long long NowNs() { return Common::g_wall_clock.GetTimeNS().count(); }
 // Texture cache garbage collection (tools/prepare-vulkan-port.py, vulkan_gc_downloads.inc).
@@ -125,12 +154,78 @@ inline bool KeepDirtyTextures() {
     const auto probe = graphics_memory_probe.load(std::memory_order_relaxed);
     return !probe || !probe();
 }
+// Guest vsync (VI conductor, multicore): CoreTiming lateness of each composition event,
+// signal -> VSyncThread wake-up latency, and composition time (EDEN_DEV_VSYNC).
+inline Totals vsync_late, vsync_wake, vsync_compose;
+inline std::atomic<unsigned long long> vsync_late_max{}, vsync_wake_max{};
+inline std::atomic<long long> vsync_signal_ns{};
+inline void RaiseMax(std::atomic<unsigned long long>& peak, unsigned long long value) {
+    auto current = peak.load(std::memory_order_relaxed);
+    while (value > current && !peak.compare_exchange_weak(current, value, std::memory_order_relaxed)) {}
+}
+inline void RecordVsyncSignal(long long late_ns) {
+    const auto late = static_cast<unsigned long long>(late_ns > 0 ? late_ns : 0);
+    vsync_late.nanoseconds.fetch_add(late, std::memory_order_relaxed);
+    vsync_late.calls.fetch_add(1, std::memory_order_relaxed);
+    RaiseMax(vsync_late_max, late);
+    vsync_signal_ns.store(NowNs(), std::memory_order_release);
+}
+inline void RecordVsyncWake() {
+    const auto signal = vsync_signal_ns.load(std::memory_order_acquire);
+    if (signal == 0) return;
+    const auto wake = static_cast<unsigned long long>((std::max)(NowNs() - signal, 0LL));
+    vsync_wake.nanoseconds.fetch_add(wake, std::memory_order_relaxed);
+    vsync_wake.calls.fetch_add(1, std::memory_order_relaxed);
+    RaiseMax(vsync_wake_max, wake);
+}
+// Guest presentation pacing against the guest vsync: where in the 16.7 ms period the game
+// queues a frame and gets a free buffer back (4.2 ms buckets), the swap intervals it asks for
+// (0, 1, 2, other), and the compositions that found a new frame (EDEN_DEV_PACING).
+inline std::array<std::atomic<unsigned long long>, 4> queue_phase{}, dequeue_phase{}, swap_intervals{};
+inline std::atomic<unsigned long long> composer_acquired{};
+inline unsigned VsyncPhaseBucket() {
+    const auto signal = vsync_signal_ns.load(std::memory_order_acquire);
+    if (signal == 0) return 3;
+    const auto phase = (std::max)(NowNs() - signal, 0LL) % 16'666'667LL;
+    return static_cast<unsigned>((std::min)(phase / 4'166'667LL, 3LL));
+}
+// Queue phase within the period (sum for the mean, maximum since the last report).
+inline std::atomic<unsigned long long> queue_phase_ns{}, queue_phase_max_ns{};
+// Signal the guest vsync first and compose 1.5 ms later, so a frame the game queues in response
+// to the vsync is latched at that same vsync (dev-settings compose_delay_us=N overrides it).
+inline std::atomic<int> compose_delay_us{1500};
+inline void RecordQueue(int swap_interval) {
+    queue_phase[VsyncPhaseBucket()].fetch_add(1, std::memory_order_relaxed);
+    if (const auto signal = vsync_signal_ns.load(std::memory_order_acquire)) {
+        const auto phase = static_cast<unsigned long long>((std::max)(NowNs() - signal, 0LL) % 16'666'667LL);
+        queue_phase_ns.fetch_add(phase, std::memory_order_relaxed);
+        RaiseMax(queue_phase_max_ns, phase);
+    }
+    swap_intervals[swap_interval >= 0 && swap_interval <= 2 ? swap_interval : 3].fetch_add(1, std::memory_order_relaxed);
+}
+inline void RecordDequeued() { dequeue_phase[VsyncPhaseBucket()].fetch_add(1, std::memory_order_relaxed); }
+// Development (dev-settings keep_60=on): Keep 60 FPS for every game (display_refresh.h).
+inline std::atomic<bool> keep_60_all{false};
+// Development (dev-settings timing_prio=N): scheduling priority for the threads Eden asks to run
+// VeryHigh (HostTiming, VSyncThread). On the console every emulator thread otherwise shares one
+// priority, so these never preempt the guest cores. 0 keeps the platform default.
+inline std::atomic<int> timing_priority{0};
+// First step of Common::SetCurrentThreadPriority; true when it set the priority itself.
+bool ApplyThreadPriority(unsigned level);
 // Development boot trace (dev-settings boot_trace=START:END, milliseconds after the settings
 // are read): guest GPU submissions and GPU-thread dispatches inside it are logged one by one.
 inline std::atomic<long long> boot_trace_begin{0}, boot_trace_end{0};
 // dev-settings fs_callers=on: log the guest caller of each IFileSystem request (its backtrace
 // walk delays that request by ~0.1 s, so it is off unless asked for).
 inline std::atomic<bool> trace_fs_callers{false};
+// Development (dev-settings swap_trace=on): the guest thread whose HLE request is being handled
+// (set around each request), so a present-interval change reports the game's call chain; and
+// dump_code=on writes the game's executable mappings to logs/code_dump.bin after the load.
+inline std::atomic<bool> trace_swap_callers{false};
+inline std::atomic<bool> dump_code{false};
+// The running game's main module base (development probes resolve game addresses against it).
+inline std::atomic<unsigned long long> main_module_base{0};
+inline thread_local void* hle_request_thread = nullptr;
 // Maxwell render-enable evaluations (Maxwell3D::ProcessQueryCondition): [0] host conditional
 // rendering, [1]/[2] always/never overrides, [3 + mode * 2 + result] per render_enable mode
 // (False, True, Conditional, IfEqual, IfNotEqual) and the CPU-evaluated result. With
@@ -145,11 +240,12 @@ struct IdleCounters {
 };
 inline std::array<IdleCounters, 4> guest_idle{};
 // PAUSE iterations a guest core spins on its interrupt flag before sleeping (~20 ns each on the
-// console). Guest job systems hand work between cores ~150 times a frame; sleeping on each
-// handoff put the host's thread wake-up latency on the critical path. 100 us (the default) took
-// a racing game's heavy phase from ~55 to ~59.6 FPS; dev-settings
-// idle_spin_us=N overrides it (0 sleeps at once).
-inline std::atomic<unsigned> idle_spin_iterations{5000};
+// console). Guest job systems hand work between cores thousands of times a second; sleeping on a
+// handoff puts the host's thread wake-up latency on the critical path. 100 us took a racing game's
+// heavy phase from ~55 to ~59.6 FPS; 500 us (the default) cut a tested game's requests for
+// 30 FPS from 23% to 15% of frames (sleeps per core 800 -> 330 a second). 2 ms cut them to 12% but
+// made its rifts flicker. dev-settings idle_spin_us=N overrides it (0 sleeps at once).
+inline std::atomic<unsigned> idle_spin_iterations{25000};
 // Draws between the Vulkan rasterizer's hand-offs to its worker, minus one (a power of two minus
 // one; tools/prepare-vulkan-port.py). Upstream hands off every 8 draws; dev-settings
 // dispatch_draws=N (8 to 512) overrides the 64 used here.
