@@ -997,7 +997,9 @@ int main(int argc, char** argv) {
                 }
 #endif
                 passed(game ? "game_loaded" : "nro_loaded");
+#ifdef PS5_NATIVE
                 if (game && Eden::IoBench::enabled.exchange(false)) Eden::IoBench::Run(system, guest);
+#endif
                 Eden::Report("loader", "Game loaded; initializing renderer");
 #ifdef EDEN_PS5_OPENGL
                 // Retain the failure, then release CPU readiness and complete normal
