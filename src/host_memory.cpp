@@ -72,16 +72,11 @@ constexpr std::size_t PagesPerGranule = Granule / GuestPage;
 constexpr std::size_t Chunks = GuestPages / PagesPerGranule;
 constexpr std::size_t WindowBytes = GuestPages * GuestPage;
 // One byte per guest page below the window: the JIT reads it at [r13 + page - MapBytes]
-// (headless/checked-fastmem.cmake). Bits 0-1 block the page's own direct reads and writes, bits
-// 2-3 the same for the page after it: an access that may cross into it tests both, and the
-// out-of-line path still goes direct when only the next page is blocked and the access stays
-// inside its own page. A guard granule after the window stays reserved.
+// (headless/checked-fastmem.cmake). A guard granule after the window stays reserved.
 constexpr std::size_t MapBytes = GuestPages;
 constexpr std::size_t ReserveBytes = MapBytes + WindowBytes + Granule;
 constexpr std::uint8_t Readable = 1, Writable = 2; // Eden's requested page access
-constexpr std::uint8_t ReadBlocked = 1, WriteBlocked = 2, Blocked = 3; // a page's own bits
-constexpr int NextShift = 2;                                           // the next page's bits
-constexpr std::uint8_t AllBlocked = Blocked | Blocked << NextShift;
+constexpr std::uint8_t ReadBlocked = 1, WriteBlocked = 2, Blocked = 3; // map byte bits
 constexpr std::uint64_t ProbeMarker = 0x5a17ed5a17ed5a17ull;
 
 std::atomic<bool> window_requested{false};
@@ -184,7 +179,7 @@ public:
 #endif
         map = reservation;
         base = reservation + MapBytes;
-        std::memset(map, AllBlocked, MapBytes);
+        std::memset(map, Blocked, MapBytes);
         try {
             page_backing.assign(GuestPages, 0);
             page_access.assign(GuestPages, 0);
@@ -289,11 +284,11 @@ private:
     // A page's byte also carries its successor's blocks: direct accesses may cross into it.
     void Refresh(std::size_t first, std::size_t last) {
         for (std::size_t page = first ? first - 1 : 0; page <= last; ++page)
-            map[page] = static_cast<std::uint8_t>(Own(page) | Own(page + 1) << NextShift);
+            map[page] = Own(page) | Own(page + 1);
     }
     void Block(std::size_t chunk, std::size_t count) {
         const std::size_t first = chunk * PagesPerGranule, last = (chunk + count) * PagesPerGranule - 1;
-        for (std::size_t page = first ? first - 1 : 0; page <= last; ++page) map[page] = AllBlocked;
+        for (std::size_t page = first ? first - 1 : 0; page <= last; ++page) map[page] = Blocked;
     }
 
     template<class Operation>
@@ -413,7 +408,7 @@ private:
         constexpr std::uint64_t pattern = 0x0123456789abcdefull;
         auto* word = reinterpret_cast<volatile std::uint64_t*>(backing_base + Granule + 8);
         std::uint64_t rsp = 0;
-        if (map[MapBytes - 1] != AllBlocked) return "map";
+        if (map[MapBytes - 1] != Blocked) return "map";
         // Reserved memory faults; the fake call returns after the faulting load.
         probe = {};
         if (eden_fastmem_probe_load(base, &rsp) != ProbeMarker || probe.hits != 1) return "reserved-fault";
@@ -449,18 +444,14 @@ namespace Eden::Fastmem {
 void Request(bool enabled) noexcept { window_requested = enabled; }
 bool Requested() noexcept { return window_requested; }
 Stats WindowStats() noexcept {
-    std::uint64_t direct_reads = 0, direct_writes = 0, boundary_reads = 0, boundary_writes = 0;
+    std::uint64_t direct_reads = 0, direct_writes = 0;
     if (const auto* map = current_map.load()) {
         for (std::size_t page = 0; page < GuestPages; ++page) {
-            const bool read = !(map[page] & ReadBlocked), write = !(map[page] & WriteBlocked);
-            direct_reads += read;
-            direct_writes += write;
-            boundary_reads += read && (map[page] & ReadBlocked << NextShift);
-            boundary_writes += write && (map[page] & WriteBlocked << NextShift);
+            direct_reads += !(map[page] & ReadBlocked);
+            direct_writes += !(map[page] & WriteBlocked);
         }
     }
     return {counters.window, counters.mapped_pages, counters.aliased_chunks, direct_reads, direct_writes,
-            boundary_reads, boundary_writes,
             counters.map_calls, counters.unmap_calls, counters.protect_calls,
             counters.kernel_calls, counters.kernel_ns, counters.failures};
 }

@@ -672,11 +672,8 @@ static void CheckFastmemA32() {
     auto stats = Eden::Fastmem::WindowStats();
     require(stats.aliased_chunks == 4 + 1 + 2 && stats.failures == 0);
     require(stats.mapped_pages == 16 + 8 + 4 + 3 + 8);
-    // Direct reads by the page's own access: A (16), C (4), E (8) minus the tracked page.
-    require(stats.direct_reads == 16 + 4 + 8 - 1);
-    // Of those, blocked only by the next page: the last pages of A, C and E, and the
-    // page before E's tracked one. They go direct out of line unless an access crosses.
-    require(stats.boundary_reads == 1 + 1 + 2);
+    // Direct reads: A (16), C (4), E (8) minus the tracked page and its predecessor.
+    require(stats.direct_reads == 16 - 1 + 4 - 1 + 8 - 2 - 1);
 
     unsigned cases = 0;
     const auto run = [&](const std::vector<uint32_t>& program, uint32_t address, uint32_t count, uint32_t iterations,
@@ -787,14 +784,6 @@ static void CheckFastmemA32() {
     fill(0x600100, 1);
     run(increment, 0x600100, 1, 0, 2, [&](uint32_t) {
         uint32_t value; std::memcpy(&value, host_at(0x600100), 4); return value == 2;
-    }, 2);                                       // LDR and STR each fault once
-    // The chunk's last page is blocked only by the unmapped page after it: its accesses take
-    // the out-of-line direct access, which must fault and recover the same way.
-    copy(false, 0x100000, 0x603ff8, 1, 1, 1);    // VSTR s0
-    copy(false, 0x603ff8, 0x502000, 1, 1, 1);    // VLDR s0
-    fill(0x603ff0, 1);
-    run(increment, 0x603ff0, 1, 0, 2, [&](uint32_t) {
-        uint32_t value; std::memcpy(&value, host_at(0x603ff0), 4); return value == 2;
     }, 2);                                       // LDR and STR each fault once
     // ldrex r1,[r0]; add r1,r1,#1; strex r2,r1,[r0]; cmp r2,#0; bne loop; subs r3,r3,#1; bne loop; svc #0
     const std::vector<uint32_t> atomic{0xe1901f9fu, 0xe2811001u, 0xe1802f91u, 0xe3520000u, 0x1afffffau,
