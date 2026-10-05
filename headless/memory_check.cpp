@@ -674,6 +674,10 @@ static void CheckFastmemA32() {
     require(stats.mapped_pages == 16 + 8 + 4 + 3 + 8);
     // Direct reads: A (16), C (4), E (8) minus the tracked page and its predecessor.
     require(stats.direct_reads == 16 - 1 + 4 - 1 + 8 - 2 - 1);
+    // Never direct: B's 8 out-of-phase pages, D's 3 pages left in a partly unmapped chunk, the
+    // tracked page (no access) and C's read-only pages (no writes).
+    require(stats.out_of_phase == 8 && stats.unaliased_other == 3);
+    require(stats.access_read_blocked == 1 && stats.access_write_blocked == 4 + 1);
 
     unsigned cases = 0;
     const auto run = [&](const std::vector<uint32_t>& program, uint32_t address, uint32_t count, uint32_t iterations,

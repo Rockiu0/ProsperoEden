@@ -21,6 +21,9 @@ struct Stats {
     std::uint64_t mapped_pages;    // 4 KiB guest pages mapped inside the window
     std::uint64_t aliased_chunks;  // 16 KiB chunks aliased into the window
     std::uint64_t direct_reads, direct_writes; // pages whose loads/stores go direct
+    // Mapped pages that are never direct, by cause: in 16 KiB chunks whose backing is contiguous
+    // but out of step with the chunk, in other unaliased chunks, and by the access Eden asked for.
+    std::uint64_t out_of_phase, unaliased_other, access_read_blocked, access_write_blocked;
     std::uint64_t map_calls, unmap_calls, protect_calls; // HostMemory requests
     std::uint64_t kernel_calls, kernel_ns; // mapping system calls and their duration
     std::uint64_t failures;        // mappings the kernel refused (chunk left unaliased)
