@@ -587,7 +587,7 @@ void ReportGpuThread(unsigned frame) {
     const auto window = Eden::Fastmem::WindowStats();
     std::printf("EDEN_FASTMEM window=%llx pages=%llu chunks=%llu direct_reads=%llu direct_writes=%llu "
                 "out_of_phase=%llu unaliased_other=%llu access_read_blocked=%llu access_write_blocked=%llu "
-                "faults=%llu demotions=%llu maps=%llu unmaps=%llu protects=%llu kernel_calls=%llu kernel_ns=%llu failures=%llu\n",
+                "faults=%llu demotions=%llu maps=%llu unmaps=%llu protects=%llu kernel_calls=%llu kernel_ns=%llu failures=%llu large=%llu\n",
                 static_cast<unsigned long long>(window.window), static_cast<unsigned long long>(window.mapped_pages),
                 static_cast<unsigned long long>(window.aliased_chunks),
                 static_cast<unsigned long long>(window.direct_reads),
@@ -601,7 +601,8 @@ void ReportGpuThread(unsigned frame) {
                 static_cast<unsigned long long>(window.map_calls), static_cast<unsigned long long>(window.unmap_calls),
                 static_cast<unsigned long long>(window.protect_calls),
                 static_cast<unsigned long long>(window.kernel_calls), static_cast<unsigned long long>(window.kernel_ns),
-                static_cast<unsigned long long>(window.failures));
+                static_cast<unsigned long long>(window.failures),
+                static_cast<unsigned long long>(window.large_blocks));
     // Guest cores record their owner CPU clocks at their next JIT exit.
     Snapshot();
 }
