@@ -20,8 +20,7 @@ struct Stats {
     std::uint64_t window;          // window base, 0 without a window
     std::uint64_t mapped_pages;    // 4 KiB guest pages mapped inside the window
     std::uint64_t aliased_chunks;  // 16 KiB chunks aliased into the window
-    std::uint64_t direct_reads, direct_writes; // pages whose own loads/stores may go direct
-    std::uint64_t boundary_reads, boundary_writes; // of those, pages whose next page is blocked
+    std::uint64_t direct_reads, direct_writes; // pages whose loads/stores go direct
     std::uint64_t map_calls, unmap_calls, protect_calls; // HostMemory requests
     std::uint64_t kernel_calls, kernel_ns; // mapping system calls and their duration
     std::uint64_t failures;        // mappings the kernel refused (chunk left unaliased)
