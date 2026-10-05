@@ -87,6 +87,7 @@ constexpr std::uint64_t ProbeMarker = 0x5a17ed5a17ed5a17ull;
 
 std::atomic<bool> window_requested{false};
 std::atomic<bool> large_requested{true};
+std::atomic<bool> alias_bench_requested{false};
 struct Counters {
     std::atomic<std::uint64_t> window, mapped_pages, aliased_chunks, large_blocks;
     std::atomic<std::uint64_t> map_calls, unmap_calls, protect_calls, kernel_calls, kernel_ns, failures;
@@ -205,6 +206,7 @@ public:
             return Abandon();
         }
         large = large_requested && LargeSelfTest(backing_base, backing_size);
+        if (alias_bench_requested) AliasBench(backing_base);
         counters.window = reinterpret_cast<std::uintptr_t>(base);
         current_map = map;
         current_window = this;
@@ -482,6 +484,70 @@ private:
         for (std::size_t b = first / ChunksPerLarge; b <= last / ChunksPerLarge; ++b) Promote(b);
     }
 
+    // Development measurement (dev-settings fastmem_alias_bench=on): the same 16 KiB of backing
+    // read and written through the window, through Eden's own mapping, and alternately through
+    // both. Zen's L1 tags lines by linear address and store forwarding matches linear
+    // addresses, so mixing two aliases of one line may cost far more than either alone.
+    // Nanoseconds per dependent step; runs before any guest memory exists.
+    void AliasBench(std::uint8_t* backing_base) {
+        constexpr std::size_t Lines = Granule / 64;
+        constexpr unsigned Steps = 1u << 22;
+        std::vector<std::uint8_t> saved(backing_base, backing_base + Granule);
+        if (!MapChunks(0, 1, 0)) {
+            std::printf("EDEN_FASTMEM_ALIAS failed=map errno=%d\n", errno);
+            return;
+        }
+        // One pointer-chase cycle through all lines of the granule, in a scattered order.
+        for (std::size_t i = 0; i < Lines; ++i) {
+            const std::uint64_t next = ((i + 1) % Lines * 97 % Lines) * 64;
+            std::memcpy(backing_base + i * 97 % Lines * 64, &next, sizeof(next));
+        }
+        std::uint64_t sink = 0;
+        const auto timed = [](auto&& loop) {
+            double best = 1e30;
+            for (unsigned round = 0; round < 3; ++round) {
+                const auto start = std::chrono::steady_clock::now();
+                loop();
+                const auto ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - start).count();
+                best = std::min(best, ns / Steps);
+            }
+            return best;
+        };
+        const auto chase = [&](std::uint8_t* first, std::uint8_t* second) {
+            return timed([&] {
+                std::uint64_t at = 0;
+                for (unsigned i = 0; i < Steps; i += 2) {
+                    at = *reinterpret_cast<volatile std::uint64_t*>(first + at);
+                    at = *reinterpret_cast<volatile std::uint64_t*>(second + at);
+                }
+                sink += at;
+            });
+        };
+        const auto forward = [&](std::uint8_t* store, std::uint8_t* load) {
+            return timed([&] {
+                std::uint64_t value = 0;
+                for (unsigned i = 0; i < Steps; ++i) {
+                    const std::size_t at = (i & 63) * 64;
+                    *reinterpret_cast<volatile std::uint64_t*>(store + at) = value;
+                    value = *reinterpret_cast<volatile std::uint64_t*>(load + at) + 1;
+                }
+                sink += value;
+            });
+        };
+        std::uint8_t* const window = base;
+        const double chase_window = chase(window, window), chase_backing = chase(backing_base, backing_base);
+        const double chase_mixed = chase(window, backing_base);
+        const double forward_window = forward(window, window), forward_mixed = forward(window, backing_base);
+        std::memcpy(backing_base, saved.data(), Granule);
+        if (!UnmapChunks(0, 1)) Fatal("alias-bench", 0, 1);
+        std::printf("EDEN_FASTMEM_ALIAS chase_window=%.2f chase_backing=%.2f chase_mixed=%.2f "
+                    "forward_window=%.2f forward_mixed=%.2f sink=%llu\n",
+                    chase_window, chase_backing, chase_mixed, forward_window, forward_mixed,
+                    static_cast<unsigned long long>(sink & 1));
+        counters.kernel_calls = 0;
+        counters.kernel_ns = 0;
+    }
+
     // The large-mapping steps on the first backing block, after the window self-test: map 2 MiB
     // over 16 KiB mappings, go back to 16 KiB, withdraw one chunk. A failure only turns large
     // mappings off.
@@ -568,6 +634,7 @@ namespace Eden::Fastmem {
 void Request(bool enabled) noexcept { window_requested = enabled; }
 bool Requested() noexcept { return window_requested; }
 void RequestLarge(bool enabled) noexcept { large_requested = enabled; }
+void RequestAliasBench(bool enabled) noexcept { alias_bench_requested = enabled; }
 Stats WindowStats() noexcept {
     std::uint64_t direct_reads = 0, direct_writes = 0;
     if (const auto* map = current_map.load()) {

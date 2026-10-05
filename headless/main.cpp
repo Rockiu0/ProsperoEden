@@ -571,6 +571,9 @@ int main(int argc, char** argv) {
                     Eden::Performance::SetSecondaryPlacement(false);
                 } else if (entry == "fastmem=off" || entry == "fastmem=on") {
                     Eden::Fastmem::Request(entry.ends_with("on"));
+                } else if (entry == "fastmem_alias_bench=on") {
+                    // EDEN_FASTMEM_ALIAS: window versus backing access costs, measured once.
+                    Eden::Fastmem::RequestAliasBench(true);
                 } else if (entry == "fastmem_large=off") {
                     // Window aliases stay 16 KiB mappings, never 2 MiB ones.
                     Eden::Fastmem::RequestLarge(false);

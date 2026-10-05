@@ -1397,6 +1397,15 @@ int main(int argc, char** argv) {
         BenchFastmemA32();
         return 0;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--fastmem-alias") == 0) {
+        // EDEN_FASTMEM_ALIAS on this host: the window self-measures when created.
+        Eden::Fastmem::RequestAliasBench(true);
+        Eden::Fastmem::Request(true);
+        { FastmemFixture fixture; require(fixture.host.VirtualBasePointer() != nullptr); }
+        Eden::Fastmem::Request(false);
+        Eden::Fastmem::RequestAliasBench(false);
+        return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--fastmem-stress") == 0) {
         StressFastmemA32();
         return 0;
