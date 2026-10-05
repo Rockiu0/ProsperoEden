@@ -1,22 +1,37 @@
 # Checked A32 fastmem. HostMemory (src/host_memory.cpp) keeps one byte per 4 KiB guest
-# page directly below the fastmem window: bit 0 blocks direct reads, bit 1 direct writes,
-# each also set when the following page is blocked, so a direct access never crosses into
-# a blocked page. A32 loads/stores test that byte, access [r13 + vaddr] when clear and
-# otherwise run the checked page-table lookup out of line. Unaliased, GPU-tracked and
-# read-only pages therefore never fault or recompile; the fault handler only covers races
-# with concurrent mapping changes. Exclusive accesses keep the page-table path. A64 is
+# page directly below the fastmem window: bit 0 blocks direct reads, bit 1 direct writes, and
+# bits 2-3 do the same for the following page, so a direct access never crosses into a blocked
+# page. A32 loads/stores test the page's and the next page's bits and access [r13 + vaddr]
+# when both are clear. Out of line, an access blocked only by the next page goes direct when
+# it stays inside its own page (the last page before a guard page or a tracked buffer, such as
+# the top of a stack); everything else runs the checked page-table lookup. Unaliased,
+# GPU-tracked and read-only pages therefore never fault or recompile; the fault handler only
+# covers races with concurrent mapping changes. Exclusive accesses keep the page-table path. A64 is
 # unchanged. Operates on memory_emitter (emit_x64_memory.h) and memory_source (.cpp.inc).
 
 set(checked_helpers [=[
 // Checked A32 fastmem: see headless/checked-fastmem.cmake.
 constexpr int checked_map_bytes = 1 << 20;
-constexpr u8 checked_read_blocked = 1, checked_write_blocked = 2;
+constexpr u8 checked_read_own = 1, checked_write_own = 2;
+constexpr int checked_next_shift = 2;
+constexpr u8 checked_read_blocked = checked_read_own | checked_read_own << checked_next_shift;
+constexpr u8 checked_write_blocked = checked_write_own | checked_write_own << checked_next_shift;
 
 inline void EmitCheckedFastmemTest(BlockOfCode& code, Xbyak::Reg64 vaddr, Xbyak::Reg64 index, u8 blocked_bit, Xbyak::Label& blocked) {
     code.mov(index.cvt32(), vaddr.cvt32());
     code.shr(index.cvt32(), int(page_table_const_bits));
     code.test(code.byte[r13 + index - checked_map_bytes], blocked_bit);
     code.jnz(blocked, code.T_NEAR);
+}
+// Out of line, with index still holding vaddr's page from EmitCheckedFastmemTest: falls through
+// to a direct access when the page's own bit is clear and the access ends inside the page.
+inline void EmitCheckedBoundaryTest(BlockOfCode& code, Xbyak::Reg64 vaddr, Xbyak::Reg64 index, u8 own_bit, size_t bitsize, Xbyak::Label& slow) {
+    code.test(code.byte[r13 + index - checked_map_bytes], own_bit);
+    code.jnz(slow, code.T_NEAR);
+    code.mov(index.cvt32(), vaddr.cvt32());
+    code.and_(index.cvt32(), u32(page_table_const_size - 1));
+    code.cmp(index.cvt32(), u32(page_table_const_size - bitsize / 8));
+    code.ja(slow, code.T_NEAR);
 }
 
 // EmitVAddrLookup<A32EmitContext> for code inside a deferred block (instantiated for A32
@@ -90,11 +105,13 @@ foreach(direction Read Write)
     if(direction STREQUAL "Read")
         set(pointer src_ptr)
         set(blocked_bit checked_read_blocked)
+        set(own_bit checked_read_own)
         set(direct_access "EmitReadMemoryMov<bitsize>(code, value_idx, r13 + vaddr, ordered)")
         set(fallback_access "EmitReadMemoryMov<bitsize>(code, value_idx, fallback_ptr, ordered)")
     else()
         set(pointer dest_ptr)
         set(blocked_bit checked_write_blocked)
+        set(own_bit checked_write_own)
         set(direct_access "EmitWriteMemoryMov<bitsize>(code, r13 + vaddr, value_idx, ordered)")
         set(fallback_access "EmitWriteMemoryMov<bitsize>(code, fallback_ptr, value_idx, ordered)")
     endif()
@@ -110,24 +127,28 @@ foreach(direction Read Write)
         // Use fastmem
         if constexpr (checked_fastmem) {
             const Xbyak::Reg64 index = ctx.reg_alloc.ScratchGpr(code);
-            SharedLabel blocked = ctx.GenSharedLabel();
+            SharedLabel blocked = ctx.GenSharedLabel(), slow = ctx.GenSharedLabel();
             EmitCheckedFastmemTest(code, vaddr, index, ${blocked_bit}, *blocked);
             const auto location = ${direct_access};
             ctx.deferred_emits.emplace_back([=, this, &ctx] {
                 code.L(*blocked);
+                EmitCheckedBoundaryTest(code, vaddr, index, ${own_bit}, bitsize, *slow);
+                const auto boundary_location = ${direct_access};
+                code.jmp(*end, code.T_NEAR);
+                code.L(*slow);
                 const auto fallback_ptr = EmitCheckedFallbackLookup(code, ctx, bitsize, *abort, vaddr, index);
                 ${fallback_access};
                 code.jmp(*end, code.T_NEAR);
                 code.L(*abort);
                 code.call(wrapped_fn);
-                fastmem_patch_info.emplace(
-                    std::bit_cast<u64>(location),
-                    FastmemPatchInfo{
-                        std::bit_cast<u64>(code.getCurr()),
-                        std::bit_cast<u64>(wrapped_fn),
-                        *fastmem_marker,
-                        conf.recompile_on_fastmem_failure,
-                    });
+                const FastmemPatchInfo patch{
+                    std::bit_cast<u64>(code.getCurr()),
+                    std::bit_cast<u64>(wrapped_fn),
+                    *fastmem_marker,
+                    conf.recompile_on_fastmem_failure,
+                };
+                fastmem_patch_info.emplace(std::bit_cast<u64>(location), patch);
+                fastmem_patch_info.emplace(std::bit_cast<u64>(boundary_location), patch);
                 EmitCheckMemoryAbort(ctx, inst, end);
                 code.jmp(*end, code.T_NEAR);
             });
@@ -148,13 +169,19 @@ set(vec_read [=[
             const auto temporary = ctx.reg_alloc.ScratchGpr(code);
             const auto vector = ctx.reg_alloc.ScratchXmm(code);
             const auto wrapped_fn = read_fallbacks[std::make_tuple(false, bitsize, vaddr.getIdx(), temporary.getIdx())];
-            SharedLabel blocked = ctx.GenSharedLabel(), abort = ctx.GenSharedLabel(), end = ctx.GenSharedLabel();
+            SharedLabel blocked = ctx.GenSharedLabel(), slow = ctx.GenSharedLabel(), abort = ctx.GenSharedLabel(), end = ctx.GenSharedLabel();
             EmitCheckedFastmemTest(code, vaddr, temporary, checked_read_blocked, *blocked);
             const auto location = code.getCurr();
             if constexpr (bitsize == 32) code.movd(vector, code.dword[r13 + vaddr]);
             else code.movq(vector, code.qword[r13 + vaddr]);
             ctx.deferred_emits.emplace_back([=, this, &ctx] {
                 code.L(*blocked);
+                EmitCheckedBoundaryTest(code, vaddr, temporary, checked_read_own, bitsize, *slow);
+                const auto boundary_location = code.getCurr();
+                if constexpr (bitsize == 32) code.movd(vector, code.dword[r13 + vaddr]);
+                else code.movq(vector, code.qword[r13 + vaddr]);
+                code.jmp(*end, code.T_NEAR);
+                code.L(*slow);
                 const auto pointer = EmitCheckedFallbackLookup(code, ctx, bitsize, *abort, vaddr, temporary);
                 if constexpr (bitsize == 32) code.movd(vector, code.dword[pointer]);
                 else code.movq(vector, code.qword[pointer]);
@@ -162,14 +189,14 @@ set(vec_read [=[
                 code.L(*abort);
                 code.call(wrapped_fn);
                 // A faulting direct load also returns here, with the value in temporary.
-                fastmem_patch_info.emplace(
-                    std::bit_cast<u64>(location),
-                    FastmemPatchInfo{
-                        std::bit_cast<u64>(code.getCurr()),
-                        std::bit_cast<u64>(wrapped_fn),
-                        *fastmem_marker,
-                        conf.recompile_on_fastmem_failure,
-                    });
+                const FastmemPatchInfo patch{
+                    std::bit_cast<u64>(code.getCurr()),
+                    std::bit_cast<u64>(wrapped_fn),
+                    *fastmem_marker,
+                    conf.recompile_on_fastmem_failure,
+                };
+                fastmem_patch_info.emplace(std::bit_cast<u64>(location), patch);
+                fastmem_patch_info.emplace(std::bit_cast<u64>(boundary_location), patch);
                 if constexpr (bitsize == 32) code.movd(vector, temporary.cvt32());
                 else code.movq(vector, temporary);
                 EmitCheckMemoryAbort(ctx, inst, end);
@@ -188,13 +215,19 @@ set(vec_write [=[
             const auto temporary = ctx.reg_alloc.ScratchGpr(code);
             const auto vector = ctx.reg_alloc.UseXmm(code, args[2]);
             const auto wrapped_fn = write_fallbacks[std::make_tuple(false, bitsize, vaddr.getIdx(), temporary.getIdx())];
-            SharedLabel blocked = ctx.GenSharedLabel(), abort = ctx.GenSharedLabel(), end = ctx.GenSharedLabel();
+            SharedLabel blocked = ctx.GenSharedLabel(), slow = ctx.GenSharedLabel(), abort = ctx.GenSharedLabel(), end = ctx.GenSharedLabel();
             EmitCheckedFastmemTest(code, vaddr, temporary, checked_write_blocked, *blocked);
             const auto location = code.getCurr();
             if constexpr (bitsize == 32) code.movd(code.dword[r13 + vaddr], vector);
             else code.movq(code.qword[r13 + vaddr], vector);
             ctx.deferred_emits.emplace_back([=, this, &ctx] {
                 code.L(*blocked);
+                EmitCheckedBoundaryTest(code, vaddr, temporary, checked_write_own, bitsize, *slow);
+                const auto boundary_location = code.getCurr();
+                if constexpr (bitsize == 32) code.movd(code.dword[r13 + vaddr], vector);
+                else code.movq(code.qword[r13 + vaddr], vector);
+                code.jmp(*end, code.T_NEAR);
+                code.L(*slow);
                 const auto pointer = EmitCheckedFallbackLookup(code, ctx, bitsize, *abort, vaddr, temporary);
                 if constexpr (bitsize == 32) code.movd(code.dword[pointer], vector);
                 else code.movq(code.qword[pointer], vector);
@@ -208,14 +241,14 @@ set(vec_write [=[
                 if constexpr (bitsize == 32) code.movd(temporary.cvt32(), vector);
                 else code.movq(temporary, vector);
                 code.call(wrapped_fn);
-                fastmem_patch_info.emplace(
-                    std::bit_cast<u64>(location),
-                    FastmemPatchInfo{
-                        std::bit_cast<u64>(code.getCurr()),
-                        std::bit_cast<u64>(fault_entry),
-                        *fastmem_marker,
-                        conf.recompile_on_fastmem_failure,
-                    });
+                const FastmemPatchInfo patch{
+                    std::bit_cast<u64>(code.getCurr()),
+                    std::bit_cast<u64>(fault_entry),
+                    *fastmem_marker,
+                    conf.recompile_on_fastmem_failure,
+                };
+                fastmem_patch_info.emplace(std::bit_cast<u64>(location), patch);
+                fastmem_patch_info.emplace(std::bit_cast<u64>(boundary_location), patch);
                 EmitCheckMemoryAbort(ctx, inst, end);
                 code.jmp(*end, code.T_NEAR);
             });
