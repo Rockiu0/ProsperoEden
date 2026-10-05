@@ -1325,6 +1325,18 @@ int main(int argc, char** argv) {
                                 if (poll % 20 == 0) {
                                     lock.unlock();
                                     Eden::Crash::DevelopmentRequest(Eden::AppFile("crash-app.txt"));
+                                    // The runner's recompile request (recompile-now.txt): every
+                                    // core drops its JIT code and compiles it again, laid out
+                                    // afresh; fastmem sites demoted so far stay demoted.
+                                    std::error_code recompile_error;
+                                    if (std::filesystem::remove(Eden::AppFile("recompile-now.txt"), recompile_error)) {
+                                        if (auto* process = system.ApplicationProcess()) {
+                                            for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; ++core)
+                                                if (auto* arm = process->GetArmInterface(core)) arm->ClearInstructionCache();
+                                        }
+                                        std::printf("EDEN_JIT_RECOMPILE demotions=%llu\n",
+                                                    static_cast<unsigned long long>(Eden::Fastmem::Demotions()));
+                                    }
                                     lock.lock();
                                 }
 #ifndef EDEN_DEV_VULKAN
