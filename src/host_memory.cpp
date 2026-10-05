@@ -85,6 +85,8 @@ struct Counters {
     std::atomic<std::uint64_t> map_calls, unmap_calls, protect_calls, kernel_calls, kernel_ns, failures;
 } counters;
 std::atomic<const std::uint8_t*> current_map{nullptr};
+class Window;
+std::atomic<Window*> current_window{nullptr};
 
 std::uint8_t Access(Common::MemoryPermission perms) {
     return (True(perms & Common::MemoryPermission::Read) ? Readable : 0) |
@@ -137,6 +139,7 @@ public:
     ~Window() {
         if (!reservation) return;
         current_map = nullptr;
+        current_window = nullptr;
         if (munmap(reservation, ReserveBytes) != 0) Fatal("release", 0, 0);
 #ifdef PS5_NATIVE
         if (map_physical >= 0 && sceKernelReleaseDirectMemory(map_physical, MapBytes) != 0) Fatal("map-release", 0, 0);
@@ -195,6 +198,7 @@ public:
         }
         counters.window = reinterpret_cast<std::uintptr_t>(base);
         current_map = map;
+        current_window = this;
         return true;
     }
 
@@ -210,6 +214,40 @@ public:
             page_access[p] = access;
         }
         Update(first / PagesPerGranule, last / PagesPerGranule);
+        // Development record (the window exists only with dev-settings fastmem=on): where the
+        // guest maps memory and how much of it the window could alias. A phase other than 0
+        // puts the backing out of step with 16 KiB guest chunks, so none of it is aliased.
+        std::size_t aliased = 0;
+        for (std::size_t c = first / PagesPerGranule; c <= last / PagesPerGranule; ++c) aliased += chunk_aliased[c];
+        std::printf("EDEN_FASTMEM_MAP guest=%zx bytes=%zx host=%zx access=%u phase=%zu chunks=%zu/%zu\n",
+                    first * GuestPage, (last - first + 1) * GuestPage, host_offset, unsigned(access),
+                    (host + PagesPerGranule * GuestPages - first) % PagesPerGranule, aliased,
+                    last / PagesPerGranule - first / PagesPerGranule + 1);
+    }
+
+    // Mapped pages the JIT cannot access directly, by cause (development statistics).
+    struct BlockedPages { std::uint64_t out_of_phase, unaliased_other, access_read, access_write; };
+    BlockedPages Diagnose() {
+        std::lock_guard lock{mutex};
+        BlockedPages blocked{};
+        for (std::size_t c = 0; c < Chunks; ++c) {
+            const std::size_t page = c * PagesPerGranule;
+            if (chunk_aliased[c]) {
+                for (std::size_t i = 0; i < PagesPerGranule; ++i) {
+                    blocked.access_read += !(page_access[page + i] & Readable);
+                    blocked.access_write += !(page_access[page + i] & Writable);
+                }
+                continue;
+            }
+            std::size_t mapped = 0;
+            bool consecutive = page_backing[page] != 0;
+            for (std::size_t i = 0; i < PagesPerGranule; ++i) {
+                mapped += page_backing[page + i] != 0;
+                if (i && page_backing[page + i] != page_backing[page] + i) consecutive = false;
+            }
+            (consecutive ? blocked.out_of_phase : blocked.unaliased_other) += mapped;
+        }
+        return blocked;
     }
 
     void Unmap(std::size_t offset, std::size_t length) {
@@ -451,7 +489,10 @@ Stats WindowStats() noexcept {
             direct_writes += !(map[page] & WriteBlocked);
         }
     }
+    Window::BlockedPages blocked{};
+    if (auto* window = current_window.load()) blocked = window->Diagnose();
     return {counters.window, counters.mapped_pages, counters.aliased_chunks, direct_reads, direct_writes,
+            blocked.out_of_phase, blocked.unaliased_other, blocked.access_read, blocked.access_write,
             counters.map_calls, counters.unmap_calls, counters.protect_calls,
             counters.kernel_calls, counters.kernel_ns, counters.failures};
 }
