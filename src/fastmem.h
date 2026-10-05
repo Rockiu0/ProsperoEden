@@ -17,6 +17,9 @@ void Request(bool enabled) noexcept;
 bool Requested() noexcept;
 // Development A/B (dev-settings fastmem_large=off): keep every alias at 16 KiB.
 void RequestLarge(bool enabled) noexcept;
+// Development measurement (dev-settings fastmem_alias_bench=on): when the window is created,
+// time accesses to one granule through the window, the backing and both (EDEN_FASTMEM_ALIAS).
+void RequestAliasBench(bool enabled) noexcept;
 
 struct Stats {
     std::uint64_t window;          // window base, 0 without a window
