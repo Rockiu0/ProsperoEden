@@ -46,10 +46,14 @@ namespace {
 struct Header { std::int64_t physical; std::size_t total; std::size_t lead; };
 constexpr std::size_t LargePage = 0x200000;
 // Development A/B: dev-settings large_pages=off keeps every block 16 KiB-aligned. The heap takes
-// its blocks before the frontend parses the file, so read it here with plain system calls.
+// its blocks before the frontend parses the file, so read it here with plain system calls. With
+// filesystem access the app has no /app0: try the places AppDir() (headless/storage_paths.h) does.
 bool DevSetting(const char* entry) {
     char text[4096];
-    const int fd = open("/app0/dev-settings.txt", O_RDONLY);
+    int fd = -1;
+    for (const char* path : {"/app0/dev-settings.txt", "/data/homebrew/PPSA99008/dev-settings.txt",
+                             "/mnt/sandbox/PPSA99008_000/app0/dev-settings.txt"})
+        if ((fd = open(path, O_RDONLY)) >= 0) break;
     if (fd < 0) return false;
     const auto count = read(fd, text, sizeof(text) - 1);
     close(fd);
