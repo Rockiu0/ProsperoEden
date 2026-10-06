@@ -2303,6 +2303,18 @@ void Initialize() {
         "${eden_app_crt}" "${PORT_ROOT}/src/lifecycle.c"
         "${PORT_BUILD_DIR}/app_heap.c")
     target_compile_definitions(eden-headless PRIVATE PS5_NATIVE=1)
+    # EDEN_BUILD commit=: the first log line of every session names the build that runs.
+    execute_process(COMMAND git -C "${PORT_ROOT}" rev-parse --short HEAD
+        OUTPUT_VARIABLE eden_build_commit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND git -C "${PORT_ROOT}" diff --quiet -- headless tools src
+        RESULT_VARIABLE eden_build_dirty ERROR_QUIET)
+    if(NOT eden_build_commit)
+        set(eden_build_commit "source")
+    elseif(NOT eden_build_dirty EQUAL 0)
+        string(APPEND eden_build_commit "+dirty")
+    endif()
+    set_source_files_properties("${EDEN_PORT_DIR}/main.cpp" PROPERTIES
+        COMPILE_DEFINITIONS "EDEN_BUILD_COMMIT=\"${eden_build_commit}\"")
     set_property(TARGET eden-headless APPEND PROPERTY LINK_DEPENDS
         "${PORT_ROOT}/tools/link-headless-native.sh" "${PORT_ROOT}/tools/unwind.ld"
         "${PORT_ROOT}/tools/app-symbols.map")

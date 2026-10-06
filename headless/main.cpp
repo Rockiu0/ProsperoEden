@@ -166,6 +166,11 @@ static void MigrateSandboxData() {
 #endif
 
 int main(int argc, char** argv) {
+#ifdef EDEN_BUILD_COMMIT
+    // The build that runs: an installed copy that did not update shows up here.
+    std::fprintf(stderr, "EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
+    std::printf("EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
+#endif
     try {
 #if defined(EDEN_DEV_PROFILE) && defined(PS5_NATIVE)
         Eden::Stall::Start();
