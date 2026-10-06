@@ -617,6 +617,9 @@ int main(int argc, char** argv) {
                 } else if (entry == "cpu_write_detail=on") {
                     // EDEN_DEV_CPUWRITE: guest writes to GPU-tracked pages broken down per core.
                     Eden::Performance::cpu_write_detail = true;
+                } else if (entry.starts_with("cpu_write_ahead=")) {
+                    // Buffer pages after a tracked write marked CPU-modified with it (performance.h).
+                    Eden::Performance::cpu_write_ahead = static_cast<unsigned>(std::min(256UL, std::strtoul(entry.c_str() + 16, nullptr, 10)));
                 } else if (entry == "fastmem_alias_bench=on") {
                     // EDEN_FASTMEM_ALIAS: window versus backing access costs, measured once.
                     Eden::Fastmem::RequestAliasBench(true);
