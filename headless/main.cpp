@@ -102,6 +102,8 @@ extern "C" std::int64_t sceKernelGetDirectMemorySize();
 #include "core/arm/debug.h"
 #include "core/memory.h"
 extern "C" bool eden_jit_shared;  // headless/dynarmic/jit_group_support.inc
+extern "C" bool eden_page_reuse;  // headless/dynarmic/page_reuse_pass.inc
+extern "C" unsigned long long eden_page_reuse_groups, eden_page_reuse_accesses;
 #endif
 #include "video_core/gpu.h"
 #include "profiles.h"
@@ -778,6 +780,9 @@ int main(int argc, char** argv) {
                     // The saved block list (jit_list.h), whatever the settings file says.
                     Eden::JitList::enabled = entry.ends_with("on");
                     dev_block_list = true;
+                } else if (entry == "jit_page_reuse=off") {
+                    // One page-table lookup per A64 access, as upstream (headless/dynarmic/page-reuse.cmake).
+                    eden_page_reuse = false;
                 } else if (entry == "jit_shared=off") {
                     // Every guest core keeps its own compiled blocks (headless/dynarmic/jit_group.h).
                     eden_jit_shared = false;
@@ -1593,6 +1598,10 @@ int main(int argc, char** argv) {
                                     // The runner's recompile request (recompile-now.txt): every
                                     // core drops its JIT code and compiles it again, laid out
                                     // afresh; fastmem sites demoted so far stay demoted.
+                                    if (poll == 0)
+                                        std::printf("EDEN_JIT_PAGE_REUSE enabled=%d groups=%llu accesses=%llu\n", eden_page_reuse ? 1 : 0,
+                                                    __atomic_load_n(&eden_page_reuse_groups, __ATOMIC_RELAXED),
+                                                    __atomic_load_n(&eden_page_reuse_accesses, __ATOMIC_RELAXED));
                                     if (jit_table_check && poll == 0) {
                                         if (auto* process = system.ApplicationProcess())
                                             CheckDirectTable(process->GetPageTable().GetImpl());
