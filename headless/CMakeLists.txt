@@ -984,6 +984,56 @@ if(unmap_at LESS 0)
 endif()
 string(REPLACE "${unmap_old}" "            if (const auto mirror = page_table.entries.mirror_index; mirror != 0)\n                page_table.entries.ZeroRegion(base + mirror, end + mirror);\n${unmap_old}"
     arena_source "${arena_source}")
+# Development: guest writes to GPU-tracked pages in detail (performance.h CpuWriteDetail).
+set(tracked_old [=[        gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+            auto& current_area = rasterizer_write_areas[core];
+            PAddr subaddress = address >> YUZU_PAGEBITS;
+]=])
+set(tracked_new [=[        const bool detail = ::Eden::Performance::cpu_write_detail.load(std::memory_order_relaxed);
+        auto& stats = ::Eden::Performance::cpu_write_stats[core];
+        const long long detail_start = detail ? ::Eden::Performance::NowNs() : 0;
+        SCOPE_EXIT {
+            if (detail) {
+                stats.tracked.fetch_add(1, std::memory_order_relaxed);
+                stats.tracked_ns.fetch_add(::Eden::Performance::NowNs() - detail_start, std::memory_order_relaxed);
+            }
+        };
+        ::Eden::Performance::cpu_write_core = static_cast<unsigned>(core);
+        gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+            auto& current_area = rasterizer_write_areas[core];
+            PAddr subaddress = address >> YUZU_PAGEBITS;
+            if (detail && current_area.last_address == subaddress)
+                stats.passed.fetch_add(1, std::memory_order_relaxed);
+            if (detail && current_area.last_address != subaddress) {
+                stats.sizes[size <= 8 ? 0 : size <= 64 ? 1 : size <= 4096 ? 2 : 3].fetch_add(1, std::memory_order_relaxed);
+                if (stats.last_page == subaddress)
+                    stats.same_page.fetch_add(1, std::memory_order_relaxed);
+                stats.last_page = subaddress;
+            }
+]=])
+set(collect_old [=[                if (do_collection) {
+                    current_area.last_address = subaddress;
+                } else {
+                    return;
+                }
+]=])
+set(collect_new [=[                if (do_collection) {
+                    current_area.last_address = subaddress;
+                } else {
+                    if (detail && current_page_table->entries.GetUnchecked(v_address >> YUZU_PAGEBITS).Type() ==
+                                      Common::PageType::RasterizerCachedMemory)
+                        stats.still_tracked.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+]=])
+foreach(pair IN ITEMS tracked collect)
+    string(FIND "${arena_source}" "${${pair}_old}" pair_at)
+    if(pair_at LESS 0)
+        message(FATAL_ERROR "Pinned HandleRasterizerWrite changed (${pair})")
+    endif()
+    string(REPLACE "${${pair}_old}" "${${pair}_new}" arena_source "${arena_source}")
+endforeach()
+string(PREPEND arena_source "#include \"${EDEN_PORT_DIR}/performance.h\"\n")
 if(EDEN_A32_FASTMEM)
     # The window spans 4 GiB: only 32-bit applications get it as their fastmem arena.
     set(arena_old "        if (process.IsApplication() && Settings::IsFastmemEnabled()) {")

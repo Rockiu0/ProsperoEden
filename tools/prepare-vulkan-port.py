@@ -90,6 +90,72 @@ void RasterizerVulkan::DispatchCompute() {"""),
     ('        std::scoped_lock lock{texture_cache.mutex};\n        texture_cache.WriteMemory(addr, size);\n    }\n    pipeline_cache.InvalidateRegion(addr, size);',
      '        ::Eden::Performance::GuestCacheLock(texture_cache.mutex);\n'
      '        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};\n        texture_cache.WriteMemory(addr, size);\n    }\n    pipeline_cache.InvalidateRegion(addr, size);'),
+    # Development: where OnCPUWrite spends its time (performance.h CpuWriteDetail).
+    ("""    DEBUG_ASSERT(addr != 0 || size != 0);
+    {
+        ::Eden::Performance::GuestCacheLock(buffer_cache.mutex);
+        std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
+        if (buffer_cache.OnCPUWrite(addr, size)) {
+            return true;
+        }
+    }
+    {
+        ::Eden::Performance::GuestCacheLock(texture_cache.mutex);
+        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+        texture_cache.WriteMemory(addr, size);
+    }
+    pipeline_cache.InvalidateRegion(addr, size);
+    return false;
+""",
+     """    DEBUG_ASSERT(addr != 0 || size != 0);
+    if (::Eden::Performance::cpu_write_detail.load(std::memory_order_relaxed)) [[unlikely]] {
+        using Detail = ::Eden::Performance::CpuWriteDetail;
+        Detail& stats = ::Eden::Performance::cpu_write_stats[::Eden::Performance::cpu_write_core & 3];
+        long long mark = ::Eden::Performance::NowNs();
+        const auto lap = [&](std::atomic<unsigned long long> Detail::*total) {
+            const long long now = ::Eden::Performance::NowNs();
+            (stats.*total).fetch_add(static_cast<unsigned long long>(now - mark), std::memory_order_relaxed);
+            mark = now;
+        };
+        {
+            ::Eden::Performance::GuestCacheLock(buffer_cache.mutex);
+            std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
+            lap(&Detail::buffer_wait_ns);
+            const bool registered = buffer_cache.IsRegionRegistered(addr, size);
+            const bool gpu_modified = buffer_cache.OnCPUWrite(addr, size);
+            lap(&Detail::buffer_ns);
+            (!registered ? stats.unregistered : gpu_modified ? stats.gpu_modified : stats.cpu_modified)
+                .fetch_add(1, std::memory_order_relaxed);
+            if (gpu_modified) {
+                return true;
+            }
+        }
+        {
+            ::Eden::Performance::GuestCacheLock(texture_cache.mutex);
+            std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+            lap(&Detail::texture_wait_ns);
+            texture_cache.WriteMemory(addr, size);
+            lap(&Detail::texture_ns);
+        }
+        pipeline_cache.InvalidateRegion(addr, size);
+        lap(&Detail::shader_ns);
+        return false;
+    }
+    {
+        ::Eden::Performance::GuestCacheLock(buffer_cache.mutex);
+        std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
+        if (buffer_cache.OnCPUWrite(addr, size)) {
+            return true;
+        }
+    }
+    {
+        ::Eden::Performance::GuestCacheLock(texture_cache.mutex);
+        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+        texture_cache.WriteMemory(addr, size);
+    }
+    pipeline_cache.InvalidateRegion(addr, size);
+    return false;
+"""),
     # Hand recorded work to the worker every 64 draws rather than every 8: each hand-off wakes the
     # worker with a system call (about 16.7k per second and ~7 us each in heavy scenes). A 32 KiB
     # chunk still dispatches whenever it fills (about 15-25 draws of records); the 4,096-draw flush
@@ -152,6 +218,14 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {'''),
      '    scheduler.Finish();\n'
      '}'),
     ('    prepared_pipeline = pipeline;\n', '    prepared_pipeline = pipeline;\n    probe_pipeline = pipeline;\n'),
+    # Development: how long draw preparation holds the cache locks guest writes wait for.
+    ('    probe_pipeline = pipeline;\n',
+     '    probe_pipeline = pipeline;\n'
+     '    const long long hold_start = ::Eden::Performance::cpu_write_detail.load(std::memory_order_relaxed)\n'
+     '        ? ::Eden::Performance::NowNs() : 0;\n'
+     '    SCOPE_EXIT {\n'
+     '        if (hold_start != 0) ::Eden::Performance::AddSince(::Eden::Performance::draw_cache_hold, hold_start);\n'
+     '    };\n'),
     # The probe also waits before a draw's preparation: a fault there comes from the work queued
     # since the last draw (copies, blits, query resolves), not from this draw.
     ('    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    prepared_pipeline = pipeline;',

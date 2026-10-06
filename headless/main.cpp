@@ -614,6 +614,9 @@ int main(int argc, char** argv) {
                 } else if (entry == "jit_table_check=on") {
                     // Every 30 s compare the direct table with Eden's entries (EDEN_JIT_TABLE check).
                     jit_table_check = true;
+                } else if (entry == "cpu_write_detail=on") {
+                    // EDEN_DEV_CPUWRITE: guest writes to GPU-tracked pages broken down per core.
+                    Eden::Performance::cpu_write_detail = true;
                 } else if (entry == "fastmem_alias_bench=on") {
                     // EDEN_FASTMEM_ALIAS: window versus backing access costs, measured once.
                     Eden::Fastmem::RequestAliasBench(true);

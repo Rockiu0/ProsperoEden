@@ -584,6 +584,26 @@ void ReportGpuThread(unsigned frame) {
     for (unsigned slot = 0; slot < render_conditions.size(); ++slot)
         std::printf("%s%llu", slot ? "," : "", render_conditions[slot].load(std::memory_order_relaxed));
     std::printf("\n");
+    if (cpu_write_detail.load(std::memory_order_relaxed)) {
+        // Cumulative per guest core (3 = other threads); performance.h CpuWriteDetail.
+        std::printf("EDEN_DEV_CPUWRITE hold_calls=%llu hold_ns=%llu", load(draw_cache_hold, true),
+                    load(draw_cache_hold, false));
+        for (unsigned core = 0; core < cpu_write_stats.size(); ++core) {
+            const auto& stats = cpu_write_stats[core];
+            const auto get = [](const std::atomic<unsigned long long>& value) {
+                return value.load(std::memory_order_relaxed);
+            };
+            std::printf(" c%u=%llu/%llu/%llu/%llu/%llu sizes%u=%llu/%llu/%llu/%llu out%u=%llu/%llu/%llu"
+                        " ns%u=%llu/%llu/%llu/%llu/%llu",
+                        core, get(stats.tracked), get(stats.tracked_ns), get(stats.passed), get(stats.same_page),
+                        get(stats.still_tracked), core, get(stats.sizes[0]), get(stats.sizes[1]),
+                        get(stats.sizes[2]), get(stats.sizes[3]), core, get(stats.unregistered),
+                        get(stats.gpu_modified), get(stats.cpu_modified), core, get(stats.buffer_wait_ns),
+                        get(stats.buffer_ns), get(stats.texture_wait_ns), get(stats.texture_ns),
+                        get(stats.shader_ns));
+        }
+        std::printf("\n");
+    }
     const auto window = Eden::Fastmem::WindowStats();
     std::printf("EDEN_FASTMEM window=%llx pages=%llu chunks=%llu direct_reads=%llu direct_writes=%llu "
                 "out_of_phase=%llu unaliased_other=%llu access_read_blocked=%llu access_write_blocked=%llu "
