@@ -216,11 +216,6 @@ static void UpdateGrips(Core::System& system, Eden::Pad& pad) {
 }
 
 int main(int argc, char** argv) {
-#ifdef EDEN_BUILD_COMMIT
-    // The build that runs: an installed copy that did not update shows up here.
-    std::fprintf(stderr, "EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
-    std::printf("EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
-#endif
     try {
         std::FILE* report = stdout;
         SCOPE_EXIT { if (report != stdout) std::fclose(report); };
@@ -279,6 +274,12 @@ int main(int argc, char** argv) {
         static Eden::LogPipe stderr_pipe, stdout_pipe;
         if (!stderr_pipe.Attach(stderr) || !stdout_pipe.Attach(stdout))
             Eden::Report("logs", "Asynchronous log writing unavailable; writing directly");
+#ifdef EDEN_BUILD_COMMIT
+        // The build that runs, once the logs are files: an installed copy that did not update
+        // shows up here.
+        std::fprintf(stderr, "EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
+        std::printf("EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
+#endif
         Eden::Crash::Install(Eden::LogsDir(), Eden::kAppVersion, last_crash.restarted);
         Eden::BootTrace::Ready(Eden::LogsDir(), Eden::FilesystemAccess());
         Eden::BootTrace::Line("logs and crash handler ready (%s)", Eden::LogsDir().c_str());
