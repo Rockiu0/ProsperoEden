@@ -166,11 +166,6 @@ static void MigrateSandboxData() {
 #endif
 
 int main(int argc, char** argv) {
-#ifdef EDEN_BUILD_COMMIT
-    // The build that runs: an installed copy that did not update shows up here.
-    std::fprintf(stderr, "EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
-    std::printf("EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
-#endif
     try {
 #if defined(EDEN_DEV_PROFILE) && defined(PS5_NATIVE)
         Eden::Stall::Start();
@@ -220,6 +215,12 @@ int main(int argc, char** argv) {
         static Eden::LogPipe stderr_pipe, stdout_pipe;
         if (!stderr_pipe.Attach(stderr) || !stdout_pipe.Attach(stdout))
             Eden::Report("logs", "Asynchronous log writing unavailable; writing directly");
+#ifdef EDEN_BUILD_COMMIT
+        // The build that runs, once the logs are files: an installed copy that did not update
+        // shows up here.
+        std::fprintf(stderr, "EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
+        std::printf("EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
+#endif
         Eden::Crash::Install(Eden::LogsDir(), Eden::kAppVersion, last_crash.restarted);
         std::set_new_handler([] {
             ps5_opengl_heap_snapshot("allocation_failure", 0);
