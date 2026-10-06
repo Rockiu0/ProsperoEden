@@ -216,6 +216,11 @@ static void UpdateGrips(Core::System& system, Eden::Pad& pad) {
 }
 
 int main(int argc, char** argv) {
+#ifdef EDEN_BUILD_COMMIT
+    // The build that runs: an installed copy that did not update shows up here.
+    std::fprintf(stderr, "EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
+    std::printf("EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
+#endif
     try {
         std::FILE* report = stdout;
         SCOPE_EXIT { if (report != stdout) std::fclose(report); };
