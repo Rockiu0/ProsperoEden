@@ -15,20 +15,35 @@ namespace Eden::Fastmem {
 // Select before Core::System (and so HostMemory) is constructed.
 void Request(bool enabled) noexcept;
 bool Requested() noexcept;
+// Development A/B (dev-settings fastmem_large=off): keep every alias at 16 KiB.
+void RequestLarge(bool enabled) noexcept;
+// Development measurement (dev-settings fastmem_alias_bench=on): when the window is created,
+// time accesses to one granule through the window, the backing and both (EDEN_FASTMEM_ALIAS).
+void RequestAliasBench(bool enabled) noexcept;
 
 struct Stats {
     std::uint64_t window;          // window base, 0 without a window
     std::uint64_t mapped_pages;    // 4 KiB guest pages mapped inside the window
     std::uint64_t aliased_chunks;  // 16 KiB chunks aliased into the window
     std::uint64_t direct_reads, direct_writes; // pages whose loads/stores go direct
+    // Mapped pages that are never direct, by cause: in 16 KiB chunks whose backing is contiguous
+    // but out of step with the chunk, in other unaliased chunks, and by the access Eden asked for.
+    std::uint64_t out_of_phase, unaliased_other, access_read_blocked, access_write_blocked;
     std::uint64_t map_calls, unmap_calls, protect_calls; // HostMemory requests
     std::uint64_t kernel_calls, kernel_ns; // mapping system calls and their duration
     std::uint64_t failures;        // mappings the kernel refused (chunk left unaliased)
+    std::uint64_t large_blocks;    // 2 MiB blocks mapped as one large mapping
 };
 Stats WindowStats() noexcept;
 
 // JIT faults redirected to an access fallback (dynarmic exception handler): races only.
 std::uint64_t Faults() noexcept;
+// Checked access sites moved to the page-table path because their pages kept being blocked.
+std::uint64_t Demotions() noexcept;
+// Development A/B (dev-settings fastmem_sites=off): keep the window and its reserved register
+// but emit every access on the page-table path. Select before the JITs are created.
+void RequestSites(bool enabled) noexcept;
+bool SitesRequested() noexcept;
 
 // Registers of an interrupted thread in a signal handler's context argument
 // (targets without PS5_NATIVE, such as dynarmic, still build for the console).

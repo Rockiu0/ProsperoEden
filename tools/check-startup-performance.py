@@ -11,9 +11,15 @@ cache = Path((root / '.local/headless-cache').read_text().strip())
 source = cache / 'source/src'
 original = (source / 'common/thread.cpp').read_text()
 derived = (cache / 'native-local/headless/thread.cpp').read_text()
-assert derived == '#include "' + str(root / 'headless/performance.h') + '"\n' + original.replace(
+# The include names the port folder as the build was configured (a symlinked checkout differs).
+include, derived = derived.split('\n', 1)
+assert include.startswith('#include "') and Path(include[10:-1]).resolve() == root / 'headless/performance.h', include
+assert derived == original.replace(
     'void SetCurrentThreadName(const char* name) {',
-    'void SetCurrentThreadName(const char* name) {\n    ::Eden::Performance::RegisterWorker(name);')
+    'void SetCurrentThreadName(const char* name) {\n    ::Eden::Performance::RegisterWorker(name);').replace(
+    'void SetCurrentThreadPriority(ThreadPriority new_priority) {',
+    'void SetCurrentThreadPriority(ThreadPriority new_priority) {\n'
+    '    if (::Eden::Performance::ApplyThreadPriority(static_cast<unsigned>(new_priority))) return;')
 main = (root / 'headless/main.cpp').read_text()
 assert main.index('Performance::PlatformChecks()') < main.index('Common::Log::Initialize()')
 # Periodic sampling is allowed only in the explicit development profile branch.
@@ -46,6 +52,7 @@ extern "C" void ps5_opengl_heap_snapshot(const char*, unsigned) {}
 namespace Eden::Fastmem {
 Stats WindowStats() noexcept { return {}; }
 std::uint64_t Faults() noexcept { return 0; }
+std::uint64_t Demotions() noexcept { return 0; }
 }
 int main() {
     using namespace Eden::Performance;

@@ -559,6 +559,10 @@ msgstr ""
 msgid "Japanese"
 msgstr ""
 
+#: pe/ui/library.cpp
+msgid "Keep 60 FPS"
+msgstr ""
+
 #. keys, firmware and roms are folder names (unchanged). TRIANGLE is the controller's triangle button, in capitals.
 #: pe/ui/browse.cpp
 msgid "Keep keys, firmware and roms folders together. TRIANGLE uses the folder shown."
@@ -760,7 +764,7 @@ msgid "Off"
 msgstr ""
 
 #. A setting that is switched on.
-#: pe/ui/settings.cpp
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "On"
 msgstr ""
 
@@ -975,6 +979,10 @@ msgstr ""
 
 #: pe/ui/browse.cpp, pe/ui/launcher.cpp
 msgid "Saved. Applies when a game starts."
+msgstr ""
+
+#: pe/ui/library.cpp
+msgid "Saved. If the game then runs too fast, turn this off."
 msgstr ""
 
 #: pe/ui/browse.cpp

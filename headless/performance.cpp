@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "performance.h"
+#include "display_refresh.h"
 #include "crash_report.h"
 #include "stall_watchdog.h"
 #include "../src/fastmem.h"
@@ -59,8 +60,15 @@ std::array<uintptr_t, 8192> sampled_pcs{};
 std::atomic<unsigned> pc_count{};
 // Guest core 0 host PCs (JIT code, HLE, memory callbacks), sampled with the GPU thread.
 std::array<uintptr_t, 65536> sampled_core_pcs{};
+// For a sample outside the executable (a system call stub): the first three words above the
+// interrupted stack pointer that point into the executable's code, its probable callers.
+std::array<std::array<uintptr_t, 3>, 65536> sampled_core_callers{};
+// The same samples' rax and rdi (the system call number before the syscall instruction) and the
+// six words at the top of the interrupted stack (the stub's caller in the system library first).
+std::array<std::array<uintptr_t, 20>, 65536> sampled_core_syscalls{};
 std::atomic<unsigned> core_pc_count{};
 unsigned core_pc_reported{};
+unsigned core_caller_reported{};
 pthread_t core_sample_thread{};
 std::atomic<bool> core_sample_ready{};
 unsigned pc_reported{};
@@ -89,22 +97,50 @@ CallerChain CaptureCallerChain(uintptr_t rsp, uintptr_t frame, uintptr_t handler
     return callers;
 }
 #endif
-// Core 0's A32 blocks in emission order (P0): dynarmic's code cache grows linearly until a full
-// clear, so entries stay sorted and a sampled host PC finds its guest block by binary search.
+// Every core's JIT blocks (A32 and A64): the code caches are shared by the cores (each core's
+// cache holds blocks the others run), so the report sorts a copy by entry and a sampled host PC
+// finds its guest block by binary search.
 struct JitBlock {
     uintptr_t entry;
     unsigned long long size, location;
 };
-constexpr std::size_t jit_block_capacity = std::size_t{1} << 20;
+constexpr std::size_t jit_block_capacity = std::size_t{1} << 21;
 JitBlock* core0_blocks = nullptr;
 std::atomic<std::size_t> core0_block_count{0};
+std::mutex jit_block_mutex;
+// Development: std::condition_variable waits of the sampled guest core by caller (RecordCvWait).
+struct CvWaitSlot {
+    std::atomic<uintptr_t> caller{};
+    std::atomic<unsigned long long> calls{}, ns{};
+};
+std::array<CvWaitSlot, 32> cv_waits{};
+// A64 blocks are recorded with their PC alone (eden_jit_block core + 16 from the A64 JIT).
+bool jit_blocks_a64{};
 
 void PcSignal(int, siginfo_t*, void* context) {
     if (core_sample_ready.load(std::memory_order_acquire) &&
         pthread_equal(pthread_self(), core_sample_thread)) {
         const unsigned core_index = core_pc_count.load(std::memory_order_relaxed);
         if (core_index < sampled_core_pcs.size()) {
-            sampled_core_pcs[core_index] = static_cast<const uintptr_t*>(context)[224 / sizeof(uintptr_t)];
+            const auto* words = static_cast<const uintptr_t*>(context);
+            const uintptr_t pc = words[224 / sizeof(uintptr_t)];
+            sampled_core_pcs[core_index] = pc;
+            auto& callers = sampled_core_callers[core_index];
+            callers = {};
+            // Firmware 6.02 mcontext: rsp at byte 248 (the C46 caller sampler's offset).
+            if (pc >= 0x800000000ull && pc < 0x800100000ull) {
+                const auto* stack = reinterpret_cast<const uintptr_t*>(words[248 / sizeof(uintptr_t)]);
+                // Firmware 6.02 mcontext: the FreeBSD layout 48 bytes further (rax 120, rdi 72).
+                auto& raw = sampled_core_syscalls[core_index];
+                raw[0] = words[120 / sizeof(uintptr_t)];
+                raw[1] = words[72 / sizeof(uintptr_t)];   // rdi
+                raw[2] = words[80 / sizeof(uintptr_t)];   // rsi
+                raw[3] = words[88 / sizeof(uintptr_t)];   // rdx
+                for (unsigned i = 0; i < 16; ++i) raw[4 + i] = stack[i];
+                unsigned found = 0;
+                for (unsigned i = 0; i < 48 && found < callers.size(); ++i)
+                    if (stack[i] >= 0x400000 && stack[i] < 0x2800000) callers[found++] = stack[i];
+            }
             core_pc_count.store(core_index + 1, std::memory_order_release);
         }
         return;
@@ -136,29 +172,53 @@ bool topology_allowed_valid = false;
 std::atomic<bool> placement_secondary{false};
 std::atomic<unsigned> secondary_reports{};
 void CheckWorkerTopology() {
+    // Probe once per process. Later games start from a launcher thread that the first game's
+    // placement left on the secondary CPUs, where the probe finds too few cores.
+    if (worker_topology_ready) {
+        std::printf("EDEN_WORKER_TOPOLOGY ready=1 cached=1 cpus=%u,%u,%u,%u,%u\n",
+            worker_cpus[0], worker_cpus[1], worker_cpus[2], worker_cpus[3], worker_cpus[4]);
+        return;
+    }
     cpuset_t original{};
     if (__get_cpuid_max(0, nullptr) < 0xb ||
         cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, 8, &original)) return;
     std::array<unsigned, 5> cores{};
     unsigned count = 0;
     bool changed = false;
+    int stop_cpu = -1, stop_errno = 0;
+    // Firmware 13.40 answers leaf 0xb with the same x2APIC ID on every CPU; when it does not
+    // tell enough cores apart, probe again with the initial APIC ID of leaf 1.
+    for (bool leaf1 : {false, true}) {
+    if (count == cores.size() || stop_cpu >= 0) break;
+    count = 0;
     for (unsigned cpu = 0; cpu < 64; ++cpu) {
         if (!CPU_ISSET(cpu, &original)) continue;
         cpuset_t one{};
         CPU_SET(cpu, &one);
-        if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, 8, &one)) break;
+        if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, 8, &one)) {
+            stop_cpu = static_cast<int>(cpu);
+            stop_errno = errno;
+            break;
+        }
         changed = true;
         unsigned a, b, c, d;
         __cpuid_count(0xb, 0, a, b, c, d);
         // Architectural SMT level: x2APIC ID above the SMT shift identifies
         // the physical core. Do not assume OS CPU numbering matches APIC IDs.
-        if (!b || ((c >> 8) & 0xff) != 1 || (a & 31) >= 16) break;
-        const unsigned core = d >> (a & 31);
+        unsigned core;
+        if (!leaf1 && b && ((c >> 8) & 0xff) == 1 && (a & 31) < 16) {
+            core = d >> (a & 31);
+        } else {
+            // Initial APIC ID without its SMT bit (two threads per core).
+            __cpuid(1, a, b, c, d);
+            core = b >> 25;
+        }
         cpu_core[cpu] = static_cast<int>(core);
         if (count == cores.size() ||
             std::find(cores.begin(), cores.begin() + count, core) != cores.begin() + count) continue;
         cores[count] = core;
         worker_cpus[count++] = cpu;
+    }
     }
     if (changed) {
         cpuset_t restored{};
@@ -179,8 +239,13 @@ void CheckWorkerTopology() {
         }
         std::printf("EDEN_WORKER_SECONDARY mask=%llx\n", secondary_cpus);
     }
-    std::printf("EDEN_WORKER_TOPOLOGY ready=%d distinct_cores=%u cpus=%u,%u,%u,%u,%u\n",
-        worker_topology_ready, count, worker_cpus[0], worker_cpus[1], worker_cpus[2], worker_cpus[3], worker_cpus[4]);
+    unsigned long long allowed_mask = 0;
+    for (unsigned cpu = 0; cpu < 64; ++cpu)
+        if (CPU_ISSET(cpu, &original)) allowed_mask |= 1ULL << cpu;
+    std::printf("EDEN_WORKER_TOPOLOGY ready=%d distinct_cores=%u cpus=%u,%u,%u,%u,%u allowed=%llx "
+                "stop_cpu=%d stop_errno=%d\n",
+        worker_topology_ready, count, worker_cpus[0], worker_cpus[1], worker_cpus[2], worker_cpus[3], worker_cpus[4],
+        allowed_mask, stop_cpu, stop_errno);
 }
 void PlaceSecondary(const char* name) {
     if (!placement_secondary.load(std::memory_order_relaxed) || !secondary_cpus) return;
@@ -312,6 +377,27 @@ void SampleGpuFrame(unsigned frame) {
                 owner_cpu_clock_valid ? ClockNs(CLOCK_THREAD_CPUTIME_ID) : -static_cast<long long>(ENOTSUP));
 }
 
+bool ApplyThreadPriority(unsigned level) {
+    // Common::ThreadPriority::VeryHigh: CoreTiming's host timer and the VI vsync thread.
+    const int requested = timing_priority.load(std::memory_order_relaxed);
+    if (requested == 0 || level != 3) return false;
+    int policy = 0;
+    sched_param param{};
+    int error = pthread_getschedparam(pthread_self(), &policy, &param);
+    const int before = param.sched_priority;
+    if (error == 0) {
+        param.sched_priority = requested;
+        error = pthread_setschedparam(pthread_self(), policy, &param);
+    }
+    int after_policy = 0;
+    sched_param after{};
+    pthread_getschedparam(pthread_self(), &after_policy, &after);
+    std::printf("EDEN_THREAD_PRIORITY level=%u policy=%d range=%d..%d before=%d requested=%d after=%d error=%d\n",
+                level, policy, sched_get_priority_min(policy), sched_get_priority_max(policy), before,
+                requested, after.sched_priority, error);
+    return error == 0;
+}
+
 extern "C" void ps5_opengl_heap_snapshot(const char* phase, unsigned iteration);
 extern "C" unsigned eden_heap_arenas_created(void) __attribute__((weak));
 extern "C" std::size_t eden_heap_committed(void) __attribute__((weak));
@@ -385,6 +471,27 @@ void ReportGpuThread(unsigned frame) {
                     eden_heap_committed ? eden_heap_committed() : std::size_t{0}, large, large_blocks, table_held,
                     table_span);
     }
+    // Cumulative svcSetThreadPriority calls by old and new priority (pairs with at least 100).
+    std::printf("EDEN_DEV_PRIORITY self=%llu other=%llu fast=%d", priority_self.load(std::memory_order_relaxed),
+                priority_other.load(std::memory_order_relaxed), priority_fast.load() ? 1 : 0);
+    for (unsigned from = 0; from < 64; ++from)
+        for (unsigned to = 0; to < 64; ++to)
+            if (const auto calls = priority_changes[from][to].load(std::memory_order_relaxed); calls >= 100)
+                std::printf(" %u>%u=%llu", from, to, calls);
+    std::printf("\n");
+#ifdef EDEN_DEV_PROFILE
+    for (const auto& slot : cv_waits)
+        if (const auto caller = slot.caller.load(std::memory_order_relaxed))
+            std::printf("EDEN_DEV_CVWAIT caller=%llx timed=%d calls=%llu ns=%llu\n",
+                        static_cast<unsigned long long>(caller & ~(1ull << 63)), int(caller >> 63),
+                        slot.calls.load(std::memory_order_relaxed), slot.ns.load(std::memory_order_relaxed));
+#endif
+    // Cumulative guest SVCs per core and number.
+    for (unsigned core = 0; core < svc_calls.size(); ++core)
+        for (unsigned id = 0; id < svc_calls[core].size(); ++id)
+            if (const auto calls = svc_calls[core][id].load(std::memory_order_relaxed))
+                std::printf("EDEN_DEV_SVC core=%u id=%02x calls=%llu ns=%llu\n", core, id, calls,
+                            svc_ns[core][id].load(std::memory_order_relaxed));
     {
         // Cumulative HLE handling time of every service command that has cost at least 1 ms.
         std::lock_guard lock(hle_mutex);
@@ -429,6 +536,27 @@ void ReportGpuThread(unsigned frame) {
                 load(gpu_fence_drain, true), load(gpu_fence_drain, false),
                 load(gpu_present_wait, true), load(gpu_present_wait, false),
                 load(gpu_queue_full, true), load(gpu_queue_full, false), load(rasterizer_draw, true));
+    // Cumulative like the totals above; the maxima cover the interval since the last report.
+    std::printf("EDEN_DEV_VSYNC late_calls=%llu late_ns=%llu late_max_ns=%llu wake_calls=%llu wake_ns=%llu "
+                "wake_max_ns=%llu compose_calls=%llu compose_ns=%llu\n",
+                load(vsync_late, true), load(vsync_late, false),
+                vsync_late_max.exchange(0, std::memory_order_relaxed),
+                load(vsync_wake, true), load(vsync_wake, false),
+                vsync_wake_max.exchange(0, std::memory_order_relaxed),
+                load(vsync_compose, true), load(vsync_compose, false));
+    const auto list = [](const std::array<std::atomic<unsigned long long>, 4>& counts) {
+        return std::to_string(counts[0].load(std::memory_order_relaxed)) + "," +
+               std::to_string(counts[1].load(std::memory_order_relaxed)) + "," +
+               std::to_string(counts[2].load(std::memory_order_relaxed)) + "," +
+               std::to_string(counts[3].load(std::memory_order_relaxed));
+    };
+    std::printf("EDEN_DEV_PACING queue_phase=%s dequeue_phase=%s swap=%s acquired=%llu queue_phase_ns=%llu "
+                "queue_phase_max_ns=%llu compose_delay_us=%d keep_60=%d promoted=%llu\n",
+                list(queue_phase).c_str(), list(dequeue_phase).c_str(), list(swap_intervals).c_str(),
+                composer_acquired.load(std::memory_order_relaxed), queue_phase_ns.load(std::memory_order_relaxed),
+                queue_phase_max_ns.exchange(0, std::memory_order_relaxed),
+                compose_delay_us.load(std::memory_order_relaxed), int(::Eden::Display::keep_60.load(std::memory_order_relaxed)),
+                ::Eden::Display::keep_60_frames.load(std::memory_order_relaxed));
     std::printf("EDEN_DEV_GUEST cpu_write_calls=%llu cpu_write_ns=%llu cpu_read_calls=%llu cpu_read_ns=%llu "
                 "sync_calls=%llu sync_ns=%llu dequeue_calls=%llu dequeue_ns=%llu",
                 load(guest_cpu_write, true), load(guest_cpu_write, false),
@@ -456,18 +584,45 @@ void ReportGpuThread(unsigned frame) {
     for (unsigned slot = 0; slot < render_conditions.size(); ++slot)
         std::printf("%s%llu", slot ? "," : "", render_conditions[slot].load(std::memory_order_relaxed));
     std::printf("\n");
+    if (cpu_write_detail.load(std::memory_order_relaxed)) {
+        // Cumulative per guest core (3 = other threads); performance.h CpuWriteDetail.
+        std::printf("EDEN_DEV_CPUWRITE hold_calls=%llu hold_ns=%llu", load(draw_cache_hold, true),
+                    load(draw_cache_hold, false));
+        for (unsigned core = 0; core < cpu_write_stats.size(); ++core) {
+            const auto& stats = cpu_write_stats[core];
+            const auto get = [](const std::atomic<unsigned long long>& value) {
+                return value.load(std::memory_order_relaxed);
+            };
+            std::printf(" c%u=%llu/%llu/%llu/%llu/%llu sizes%u=%llu/%llu/%llu/%llu out%u=%llu/%llu/%llu"
+                        " ns%u=%llu/%llu/%llu/%llu/%llu ahead%u=%llu/%llu",
+                        core, get(stats.tracked), get(stats.tracked_ns), get(stats.passed), get(stats.same_page),
+                        get(stats.still_tracked), core, get(stats.sizes[0]), get(stats.sizes[1]),
+                        get(stats.sizes[2]), get(stats.sizes[3]), core, get(stats.unregistered),
+                        get(stats.gpu_modified), get(stats.cpu_modified), core, get(stats.buffer_wait_ns),
+                        get(stats.buffer_ns), get(stats.texture_wait_ns), get(stats.texture_ns),
+                        get(stats.shader_ns), core, get(stats.next_page), get(stats.ahead_pages));
+        }
+        std::printf("\n");
+    }
     const auto window = Eden::Fastmem::WindowStats();
     std::printf("EDEN_FASTMEM window=%llx pages=%llu chunks=%llu direct_reads=%llu direct_writes=%llu "
-                "faults=%llu maps=%llu unmaps=%llu protects=%llu kernel_calls=%llu kernel_ns=%llu failures=%llu\n",
+                "out_of_phase=%llu unaliased_other=%llu access_read_blocked=%llu access_write_blocked=%llu "
+                "faults=%llu demotions=%llu maps=%llu unmaps=%llu protects=%llu kernel_calls=%llu kernel_ns=%llu failures=%llu large=%llu\n",
                 static_cast<unsigned long long>(window.window), static_cast<unsigned long long>(window.mapped_pages),
                 static_cast<unsigned long long>(window.aliased_chunks),
                 static_cast<unsigned long long>(window.direct_reads),
                 static_cast<unsigned long long>(window.direct_writes),
+                static_cast<unsigned long long>(window.out_of_phase),
+                static_cast<unsigned long long>(window.unaliased_other),
+                static_cast<unsigned long long>(window.access_read_blocked),
+                static_cast<unsigned long long>(window.access_write_blocked),
                 static_cast<unsigned long long>(Eden::Fastmem::Faults()),
+                static_cast<unsigned long long>(Eden::Fastmem::Demotions()),
                 static_cast<unsigned long long>(window.map_calls), static_cast<unsigned long long>(window.unmap_calls),
                 static_cast<unsigned long long>(window.protect_calls),
                 static_cast<unsigned long long>(window.kernel_calls), static_cast<unsigned long long>(window.kernel_ns),
-                static_cast<unsigned long long>(window.failures));
+                static_cast<unsigned long long>(window.failures),
+                static_cast<unsigned long long>(window.large_blocks));
     // Guest cores record their owner CPU clocks at their next JIT exit.
     Snapshot();
 }
@@ -588,14 +743,45 @@ void Snapshot() {
     std::map<uintptr_t, unsigned> core_counts;
     const unsigned core_end = core_pc_count.load(std::memory_order_acquire);
     while (core_pc_reported < core_end) ++core_counts[sampled_core_pcs[core_pc_reported++]];
+    std::map<std::array<uintptr_t, 4>, unsigned> core_caller_counts;
+    for (unsigned i = core_caller_reported; i < core_end; ++i)
+        if (sampled_core_callers[i][0])
+            ++core_caller_counts[{sampled_core_pcs[i], sampled_core_callers[i][0], sampled_core_callers[i][1],
+                                  sampled_core_callers[i][2]}];
+    // Up to 24 raw syscall samples per report: pc, rax, rdi, rsi, rdx and 16 stack words.
+    unsigned raw_printed = 0;
+    for (unsigned i = core_caller_reported; i < core_end && raw_printed < 24; ++i)
+        if (sampled_core_pcs[i] >= 0x800000000ull && sampled_core_pcs[i] < 0x800100000ull) {
+            const auto& raw = sampled_core_syscalls[i];
+            ++raw_printed;
+            std::printf("EDEN_PERF_CORE_SYSCALL mono_ns=%lld pc=%llx rax=%llx rdi=%llx rsi=%llx rdx=%llx stack=", mono,
+                        static_cast<unsigned long long>(sampled_core_pcs[i]), static_cast<unsigned long long>(raw[0]),
+                        static_cast<unsigned long long>(raw[1]), static_cast<unsigned long long>(raw[2]),
+                        static_cast<unsigned long long>(raw[3]));
+            for (unsigned w = 4; w < raw.size(); ++w)
+                std::printf("%s%llx", w == 4 ? "" : ",", static_cast<unsigned long long>(raw[w]));
+            std::printf("\n");
+        }
+    core_caller_reported = core_end;
+    for (const auto& [key, count] : core_caller_counts)
+        std::printf("EDEN_PERF_CORE_CALLERS mono_ns=%lld pc=%llx callers=%llx,%llx,%llx count=%u\n", mono,
+                    static_cast<unsigned long long>(key[0]), static_cast<unsigned long long>(key[1]),
+                    static_cast<unsigned long long>(key[2]), static_cast<unsigned long long>(key[3]), count);
     for (const auto& [pc, count] : core_counts)
         std::printf("EDEN_PERF_CORE_PC mono_ns=%lld pc=%llx count=%u\n", mono,
                     static_cast<unsigned long long>(pc), count);
     // The same samples by guest block: location (A32 PC in the low word), block offset, count.
-    if (const std::size_t blocks = core0_blocks ? core0_block_count.load(std::memory_order_acquire) : 0) {
+    std::vector<JitBlock> sorted_blocks;
+    if (!core_counts.empty() && core0_blocks) {
+        std::lock_guard block_lock(jit_block_mutex);
+        sorted_blocks.assign(core0_blocks, core0_blocks + core0_block_count.load(std::memory_order_acquire));
+    }
+    std::sort(sorted_blocks.begin(), sorted_blocks.end(),
+              [](const JitBlock& a, const JitBlock& b) { return a.entry < b.entry; });
+    if (const std::size_t blocks = sorted_blocks.size()) {
         std::map<std::pair<unsigned long long, unsigned long long>, unsigned> guest_counts;
         for (const auto& [pc, count] : core_counts) {
-            const JitBlock* begin = core0_blocks;
+            const JitBlock* begin = sorted_blocks.data();
             const JitBlock* it = std::upper_bound(begin, begin + blocks, pc,
                                                   [](uintptr_t value, const JitBlock& block) { return value < block.entry; });
             if (it == begin) continue;
@@ -619,9 +805,10 @@ void Snapshot() {
             ++printed;
             const JitBlock* block = nullptr;
             for (std::size_t i = blocks; i-- > 0;)
-                if (core0_blocks[i].location == location) { block = &core0_blocks[i]; break; }
+                if (sorted_blocks[i].location == location) { block = &sorted_blocks[i]; break; }
             std::string guest;
-            const unsigned long long pc = location & 0xffffffffull;
+            // A64 locations keep the PC in their low 56 bits; A32 ones in their low word.
+            const unsigned long long pc = jit_blocks_a64 ? location : location & 0xffffffffull;
             for (unsigned long long at = pc; at < pc + 256 && guest_read32; at += 4) {
                 unsigned word = 0;
                 if (!guest_read32(at, word)) break;
@@ -707,14 +894,48 @@ extern "C" void eden_jit_phases(unsigned, unsigned long long, unsigned long long
 #endif
 
 #ifdef EDEN_DEV_PROFILE
+// Development (linker --wrap): std::condition_variable waits on the sampled guest core's thread,
+// by caller (each wait's return address is reliable without frame pointers), with their time.
+namespace {
+void RecordCvWait(uintptr_t caller, long long started) {
+    if (!core_sample_ready.load(std::memory_order_acquire) || !pthread_equal(pthread_self(), core_sample_thread)) return;
+    const long long ns = ClockNs(CLOCK_MONOTONIC) - started;
+    for (auto& slot : cv_waits) {
+        uintptr_t expected = 0;
+        if (slot.caller.load(std::memory_order_relaxed) == caller ||
+            slot.caller.compare_exchange_strong(expected, caller)) {
+            if (slot.caller.load(std::memory_order_relaxed) != caller) continue;
+            slot.calls.fetch_add(1, std::memory_order_relaxed);
+            slot.ns.fetch_add(static_cast<unsigned long long>(ns), std::memory_order_relaxed);
+            return;
+        }
+    }
+}
+} // namespace
+extern "C" void __real__ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE(void*, void*);
+extern "C" void __wrap__ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE(void* cv, void* lock) {
+    const long long started = ClockNs(CLOCK_MONOTONIC);
+    __real__ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE(cv, lock);
+    RecordCvWait(reinterpret_cast<uintptr_t>(__builtin_return_address(0)), started);
+}
+extern "C" void __real__ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE(void*, void*, long long);
+extern "C" void __wrap__ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE(void* cv, void* lock, long long until) {
+    const long long started = ClockNs(CLOCK_MONOTONIC);
+    __real__ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE(cv, lock, until);
+    RecordCvWait(reinterpret_cast<uintptr_t>(__builtin_return_address(0)) | (1ull << 63), started);
+}
 extern "C" void eden_jit_block(unsigned core, unsigned long long location, const void* entry,
                                unsigned long long size) {
-    if (core != 0) return;
+    if (!pc_sampling) return;
+    std::lock_guard lock(jit_block_mutex);
     if (!core0_blocks) core0_blocks = new JitBlock[jit_block_capacity];
-    std::size_t count = core0_block_count.load(std::memory_order_relaxed);
+    const std::size_t count = core0_block_count.load(std::memory_order_relaxed);
     const auto address = reinterpret_cast<uintptr_t>(entry);
-    if (count && address < core0_blocks[count - 1].entry) count = 0; // the cache was cleared
     if (count >= jit_block_capacity) return;
+    if (core >= 16) {
+        jit_blocks_a64 = true;
+        location &= (1ull << 56) - 1;
+    }
     core0_blocks[count] = JitBlock{address, size, location};
     core0_block_count.store(count + 1, std::memory_order_release);
 }

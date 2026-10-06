@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <mutex>
 #include <thread>
+#include <bit>
 #include <new>
 #include <string_view>
 #include <stdexcept>
@@ -49,6 +50,7 @@
 #include "performance.h"
 #include "stall_watchdog.h"
 #include "dev_vulkan.h"
+#include "io_bench.h"
 #include "../src/fastmem.h"
 #include "crash_report.h"
 #include "prosperoeden/frontend.h"
@@ -76,6 +78,7 @@ extern "C" std::int64_t sceKernelGetDirectMemorySize();
 #include "hid_core/hid_core.h"
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-private-field"
+#include "common/page_table.h"
 #include "core/hle/kernel/k_process.h"  // every build: the game's code address (jit_list.h)
 #ifdef PS5_NATIVE
 #include "core/hle/kernel/k_thread.h"
@@ -107,6 +110,34 @@ public:
 // First start with filesystem access: copy what the sandbox kept (settings, covers, Eden's saves
 // and caches) into /data/prosperoeden. Only folders that do not exist yet are filled, and the
 // sandbox copy stays, so an older ProsperoEden still finds its data.
+// dev-settings jit_table_check=on: the JIT's direct page table (headless/jit-page-table.cmake) must
+// hold, for every page, the pointer of Eden's entry, or 0 where the entry is marked or empty. A
+// difference that is still there when read again is a write path that missed the direct table.
+[[maybe_unused]] static bool jit_table_check = false;
+[[maybe_unused]] static void CheckDirectTable(Common::PageTable& table) {
+    const std::size_t mirror = table.entries.mirror_index;
+    if (mirror == 0) return;
+    using Entry = Common::PageTable::PageEntryData;
+    const auto* raw = reinterpret_cast<const volatile std::uint64_t*>(table.entries.data());
+    const auto expected = [](std::uint64_t entry) {
+        return std::uint64_t(Entry::ExtractPointer(std::bit_cast<Entry::Data>(entry)));
+    };
+    const std::size_t count = std::size_t{1} << (table.GetAddressSpaceBits() - 12);
+    std::size_t pages = 0, mismatches = 0;
+    for (std::size_t page = 0; page < count; ++page) {
+        if (raw[page] == 0 && raw[mirror + page] == 0) continue;
+        ++pages;
+        if (expected(raw[page]) == raw[mirror + page]) continue;
+        std::this_thread::yield(); // an update may be between its two stores
+        const std::uint64_t entry = raw[page], direct = raw[mirror + page];
+        if (expected(entry) == direct) continue;
+        if (++mismatches <= 8)
+            std::printf("EDEN_JIT_TABLE mismatch page=%zx entry=%llx direct=%llx\n", page,
+                        static_cast<unsigned long long>(entry), static_cast<unsigned long long>(direct));
+    }
+    std::printf("EDEN_JIT_TABLE check pages=%zu mismatches=%zu\n", pages, mismatches);
+}
+
 static void MigrateSandboxData() {
     const std::filesystem::path sandbox{"/mnt/sandbox/PPSA99008_000/download0"};
     const std::pair<std::filesystem::path, std::string> moves[] = {
@@ -184,6 +215,12 @@ int main(int argc, char** argv) {
         static Eden::LogPipe stderr_pipe, stdout_pipe;
         if (!stderr_pipe.Attach(stderr) || !stdout_pipe.Attach(stdout))
             Eden::Report("logs", "Asynchronous log writing unavailable; writing directly");
+#ifdef EDEN_BUILD_COMMIT
+        // The build that runs, once the logs are files: an installed copy that did not update
+        // shows up here.
+        std::fprintf(stderr, "EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
+        std::printf("EDEN_BUILD commit=%s\n", EDEN_BUILD_COMMIT);
+#endif
         Eden::Crash::Install(Eden::LogsDir(), Eden::kAppVersion, last_crash.restarted);
         std::set_new_handler([] {
             ps5_opengl_heap_snapshot("allocation_failure", 0);
@@ -576,6 +613,28 @@ int main(int argc, char** argv) {
                     Eden::Performance::SetSecondaryPlacement(false);
                 } else if (entry == "fastmem=off" || entry == "fastmem=on") {
                     Eden::Fastmem::Request(entry.ends_with("on"));
+                } else if (entry == "jit_table=off") {
+                    // The JIT reads Eden's packed page table instead of the direct one
+                    // (headless/jit-page-table.cmake). Read when the first page table is sized.
+                    Common::PageTable::direct_tables_requested = false;
+                } else if (entry == "jit_table_check=on") {
+                    // Every 30 s compare the direct table with Eden's entries (EDEN_JIT_TABLE check).
+                    jit_table_check = true;
+                } else if (entry == "cpu_write_detail=on") {
+                    // EDEN_DEV_CPUWRITE: guest writes to GPU-tracked pages broken down per core.
+                    Eden::Performance::cpu_write_detail = true;
+                } else if (entry.starts_with("cpu_write_ahead=")) {
+                    // Buffer pages after a tracked write marked CPU-modified with it (performance.h).
+                    Eden::Performance::cpu_write_ahead = static_cast<unsigned>(std::min(256UL, std::strtoul(entry.c_str() + 16, nullptr, 10)));
+                } else if (entry == "fastmem_alias_bench=on") {
+                    // EDEN_FASTMEM_ALIAS: window versus backing access costs, measured once.
+                    Eden::Fastmem::RequestAliasBench(true);
+                } else if (entry == "fastmem_large=off") {
+                    // Window aliases stay 16 KiB mappings, never 2 MiB ones.
+                    Eden::Fastmem::RequestLarge(false);
+                } else if (entry == "fastmem_sites=off") {
+                    // Window and reserved register kept, every access on the page-table path.
+                    Eden::Fastmem::RequestSites(false);
                 } else if (entry.starts_with("cache_spin=")) {
                     // try_lock retries before a guest core sleeps on a GPU cache lock (0 = upstream).
                     Eden::Performance::cache_lock_spins = static_cast<unsigned>(std::strtoul(entry.c_str() + 11, nullptr, 10));
@@ -590,6 +649,15 @@ int main(int argc, char** argv) {
                 } else if (entry.starts_with("idle_spin_us=")) {
                     // Guest cores spin this long on their interrupt flag before sleeping (W1).
                     Eden::Performance::idle_spin_iterations = static_cast<unsigned>(std::stoul(entry.substr(13)) * 50);
+                } else if (entry.starts_with("timing_prio=")) {
+                    // HostTiming and VSyncThread priority (EDEN_THREAD_PRIORITY reports the result).
+                    Eden::Performance::timing_priority = std::stoi(entry.substr(12));
+                } else if (entry == "keep_60=on") {
+                    // Keep 60 FPS for every game, whatever its own setting (display_refresh.h).
+                    Eden::Performance::keep_60_all = true;
+                } else if (entry.starts_with("compose_delay_us=")) {
+                    // Guest vsync signalled first, composition N us later (VI conductor).
+                    Eden::Performance::compose_delay_us = std::stoi(entry.substr(17));
                 } else if (entry.starts_with("pc_core=") && entry.size() == 9 && entry[8] >= '0' && entry[8] <= '3') {
                     // Host PC samples from this guest core instead of core 0 (with --pc-sample).
                     Eden::Performance::pc_sample_core = static_cast<unsigned>(entry[8] - '0');
@@ -621,6 +689,12 @@ int main(int argc, char** argv) {
                 } else if (entry == "graphics_usage=driver") {
                     // The caches' "memory in use" as the driver counts it (performance.h).
                     Eden::Performance::graphics_usage_from_pool = false;
+                } else if (entry == "reactive_flushing=off" || entry == "reactive_flushing=on") {
+                    // Upstream's default is on except on Android: CPU reads of GPU-written pages
+                    // download them first (Settings::values.use_reactive_flushing).
+                    Settings::values.use_reactive_flushing.SetValue(entry.ends_with("on"));
+                    std::printf("EDEN_DEV_REACTIVE_FLUSHING %u\n",
+                                unsigned(Settings::values.use_reactive_flushing.GetValue()));
                 } else if (entry == "gpu_accuracy=low") {
                     // Nothing calls UpdateGPUAccuracy() here; set the live value too.
                     Settings::values.gpu_accuracy.SetValue(Settings::GpuAccuracy::Low);
@@ -644,6 +718,18 @@ int main(int argc, char** argv) {
                     setenv(entry.substr(4, split - 4).c_str(), entry.c_str() + split + 1, 1);
                 } else if (entry == "sparse=off") {
                     Eden::DevVulkan::disable_sparse = true;
+                } else if (entry.starts_with("kspin=")) {
+                    Eden::Performance::kernel_spin_iterations = static_cast<unsigned>(std::stoul(entry.substr(6)));
+                } else if (entry == "swap_trace=on") {
+                    Eden::Performance::trace_swap_callers = true;
+                } else if (entry == "dump_code=on") {
+                    Eden::Performance::dump_code = true;
+                } else if (entry == "prio_fast=on") {
+                    Eden::Performance::priority_fast = true;
+                } else if (entry == "io_bench=on") {
+                    Eden::IoBench::enabled = true;
+                } else if (entry == "xfb=off") {
+                    Eden::DevVulkan::disable_transform_feedback = true;
                 } else if (entry == "multirange=off") {
                     Eden::DevVulkan::disable_multi_range = true;
                 } else if (entry == "custom_border=off") {
@@ -708,7 +794,7 @@ int main(int argc, char** argv) {
             }
             std::printf("EDEN_DEV_SETTINGS dma_accuracy=%u gpu_accuracy=%u null_descriptor=%u "
                         "descriptor_buffer=%u robustness2=%u vertex_input_dynamic=%u dyna_state=%u "
-                        "sparse=%u multirange=%u custom_border=%u submit_sync=%u fastmem=%u\n",
+                        "sparse=%u multirange=%u custom_border=%u submit_sync=%u fastmem=%u fastmem_sites=%u\n",
                         unsigned(Settings::values.dma_accuracy.GetValue()),
                         unsigned(Settings::values.current_gpu_accuracy),
                         unsigned(!Eden::DevVulkan::disable_null_descriptor),
@@ -720,7 +806,7 @@ int main(int argc, char** argv) {
                         unsigned(!Eden::DevVulkan::disable_multi_range),
                         unsigned(!Eden::DevVulkan::disable_custom_border),
                         unsigned(Eden::DevVulkan::sync_submissions),
-                        unsigned(Eden::Fastmem::Requested()));
+                        unsigned(Eden::Fastmem::Requested()), unsigned(Eden::Fastmem::SitesRequested()));
             std::printf("EDEN_DEV_MEMORY direct_memory=%lld vram_mode=%u\n",
                         static_cast<long long>(sceKernelGetDirectMemorySize()),
                         unsigned(Settings::values.vram_usage_mode.GetValue()));
@@ -760,6 +846,9 @@ int main(int argc, char** argv) {
             Eden::Display::output_millihertz.store(0);
             setenv(Eden::Display::kVulkanSwitch, refresh ? "1" : "0", 1);
             Eden::Display::game_millihertz.store(60000);
+            // Library > Game settings > Keep 60 FPS (display_refresh.h).
+            Eden::Display::keep_60.store(game_video.keep_60 == 1 || Eden::Performance::keep_60_all.load());
+            Eden::Display::keep_60_frames.store(0);
             Eden::Display::skipped_frames.store(0);
             // The size of the picture the session puts out (Settings > Video > Output resolution).
             Eden::Display::output_width.store(Eden::kOutputWidth[video.output]);
@@ -1002,6 +1091,9 @@ int main(int argc, char** argv) {
                 }
 #endif
                 passed(game ? "game_loaded" : "nro_loaded");
+#ifdef PS5_NATIVE
+                if (game && Eden::IoBench::enabled.exchange(false)) Eden::IoBench::Run(system, guest);
+#endif
                 Eden::Report("loader", "Game loaded; initializing renderer");
 #ifdef EDEN_PS5_OPENGL
                 // Retain the failure, then release CPU readiness and complete normal
@@ -1090,8 +1182,8 @@ int main(int argc, char** argv) {
                         value = dev_guest_memory->Read32(address);
                         return true;
                     };
-                    std::printf("EDEN_MAIN_BASE main=%llx\n",
-                                static_cast<unsigned long long>(GetInteger(Core::FindMainModuleEntrypoint(process))));
+                    Eden::Performance::main_module_base = GetInteger(Core::FindMainModuleEntrypoint(process));
+                    std::printf("EDEN_MAIN_BASE main=%llx\n", Eden::Performance::main_module_base.load());
                 }
                 if (auto* process = system.ApplicationProcess();
                     process && (Eden::Watch::watch_range.size || Eden::Watch::dump_range.size)) {
@@ -1136,6 +1228,35 @@ int main(int argc, char** argv) {
                         code_end = info.m_address + info.m_size;
                     }
                     jit_list.Start(system.GetApplicationProcessProgramID(), build, code_start, code_end - code_start);
+#ifdef EDEN_DEV_PROFILE
+                    // dev-settings dump_code=on: every executable mapping of the game (main, sdk and
+                    // subsdk modules) to logs/code_dump.bin as records of address, size and bytes.
+                    if (Eden::Performance::dump_code.exchange(false)) {
+                        if (std::FILE* out = std::fopen(Eden::LogFile("code_dump.bin").c_str(), "wb")) {
+                            u64 address = 0, total = 0;
+                            std::vector<u8> bytes;
+                            for (unsigned guard = 0; guard < 100000; ++guard) {
+                                Kernel::KMemoryInfo info{};
+                                Kernel::Svc::PageInfo page{};
+                                if (process->GetPageTable().QueryInfo(&info, &page, address).IsError() || info.m_size == 0) break;
+                                if (info.m_state == Kernel::KMemoryState::Code) {
+                                    bytes.resize(info.m_size);
+                                    system.ApplicationMemory().ReadBlock(info.m_address, bytes.data(), bytes.size());
+                                    const u64 header[2]{info.m_address, info.m_size};
+                                    std::fwrite(header, sizeof(header), 1, out);
+                                    std::fwrite(bytes.data(), 1, bytes.size(), out);
+                                    total += info.m_size;
+                                }
+                                const u64 next = info.m_address + info.m_size;
+                                if (next <= address) break;
+                                address = next;
+                            }
+                            std::fclose(out);
+                            std::printf("EDEN_CODE_DUMP bytes=%llu entry=%llx\n", static_cast<unsigned long long>(total),
+                                        static_cast<unsigned long long>(code_start));
+                        }
+                    }
+#endif
                 }
                 Eden::TakeGuestFault(); // Nothing from an earlier session belongs to this one.
                 system.Run();
@@ -1289,6 +1410,22 @@ int main(int argc, char** argv) {
                                 if (poll % 20 == 0) {
                                     lock.unlock();
                                     Eden::Crash::DevelopmentRequest(Eden::AppFile("crash-app.txt"));
+                                    // The runner's recompile request (recompile-now.txt): every
+                                    // core drops its JIT code and compiles it again, laid out
+                                    // afresh; fastmem sites demoted so far stay demoted.
+                                    if (jit_table_check && poll == 0) {
+                                        if (auto* process = system.ApplicationProcess())
+                                            CheckDirectTable(process->GetPageTable().GetImpl());
+                                    }
+                                    std::error_code recompile_error;
+                                    if (std::filesystem::remove(Eden::AppFile("recompile-now.txt"), recompile_error)) {
+                                        if (auto* process = system.ApplicationProcess()) {
+                                            for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; ++core)
+                                                if (auto* arm = process->GetArmInterface(core)) arm->ClearInstructionCache();
+                                        }
+                                        std::printf("EDEN_JIT_RECOMPILE demotions=%llu\n",
+                                                    static_cast<unsigned long long>(Eden::Fastmem::Demotions()));
+                                    }
                                     lock.lock();
                                 }
 #ifndef EDEN_DEV_VULKAN

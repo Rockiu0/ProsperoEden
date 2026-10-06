@@ -48,9 +48,12 @@ Downloads are cached in `~/.cache/prosperoeden-deps` (`PROSPEROEDEN_DEPS_CACHE`)
 Inside this repository, in `.deps/`:
 
 - **Eden** at commit `5f142c7926d0c7fcbbd0ce30794d72f638a43b2a` (GitHub mirror archive), with
-  Eden's own hash-pinned packages, which its configure step downloads. ProsperoEden does not
-  modify Eden's files: the PS5 frontend in `headless/` replaces and derives sources at
-  configure time (`headless/inject.cmake`).
+  Eden's own hash-pinned packages, which its configure step downloads. The PS5 frontend in
+  `headless/` replaces and derives sources at configure time (`headless/inject.cmake`). This
+  fork also patches a few of Eden's files when `make prepare` extracts them
+  (`tools/eden-patches/*.diff`, in name order, each applied once): faster reads of game files,
+  per-game cache storage, bounds-checked shader local memory, and CPU reads of GPU-cached
+  pages without reactive flushing.
 - **FFmpeg** at the commit Eden pins, built with only the decoders games use.
 - **PS5 OpenGL 4.6 SDK 1.0.0** (release archive), for the launcher and the OpenGL renderer.
 - **OpenSSL and zlib** from pacbrew v0.40.2.

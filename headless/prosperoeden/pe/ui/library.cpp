@@ -37,6 +37,7 @@ enum GameRow : int
     row_resolution,
     row_filter,
     row_refresh,
+    row_keep_60,
     row_mods,
     row_save, // in builds that move saves
 };
@@ -615,6 +616,8 @@ void Launcher::press_game(Key key)
             next.filter = cycle(next.filter, static_cast<int>(services_.filter_labels().size()));
         if (option_ == row_refresh)
             next.refresh = cycle(next.refresh, 2);
+        if (option_ == row_keep_60)
+            next.keep_60 = next.keep_60 == 1 ? -1 : 1;
         saved = services_.set_game_settings(game.title_id, next);
         if (saved)
             game_settings_ = next;
@@ -622,7 +625,10 @@ void Launcher::press_game(Key key)
     // 120 Hz is a request: the display has the last word.
     const bool fast = saved && option_ == row_refresh &&
                       (game_settings_.refresh >= 0 ? game_settings_.refresh : prefs_.refresh) == 1;
-    say(fast ? tr("Saved. A display that cannot show 120 Hz stays at 60 Hz.") :
+    // Only for games that move by real time: one made for 30 FPS runs too fast with it.
+    const bool keep = saved && option_ == row_keep_60 && game_settings_.keep_60 == 1;
+    say(keep ? tr("Saved. If the game then runs too fast, turn this off.") :
+        fast ? tr("Saved. A display that cannot show 120 Hz stays at 60 Hz.") :
         saved ? tr("Saved for this game. Applies on next launch.") : tr("Could not save. Please try again."),
         !saved);
     cue(saved ? Cue::toggle : Cue::error);
@@ -663,6 +669,7 @@ void Launcher::draw_game(Canvas &c, float open)
             fill(tr("Default ({0})"), {pick(filters, prefs_.filter)}),
         game_settings_.refresh >= 0 ? hertz(game_settings_.refresh) :
             fill(tr("Default ({0})"), {hertz(prefs_.refresh)}),
+        game_settings_.keep_60 == 1 ? tr("On") : tr("Off"),
         // With the game's Mods switch off (the Library's), none of them is on.
         mods_.empty() ? std::string{tr("No mods")} :
         game != nullptr && !game->mods_enabled ? std::string{tr("Off")} :
@@ -675,7 +682,7 @@ void Launcher::draw_game(Canvas &c, float open)
     };
     static constexpr const char *kLabels[] = {TR("Console mode"), TR("Renderer"), TR("Resolution"),
                                               TR("Upscaling filter"), TR("Refresh rate"),
-                                              TR("Mods"), TR("Save data")};
+                                              TR("Keep 60 FPS"), TR("Mods"), TR("Save data")};
     // Five rows show; the list scrolls to the others.
     list.push_clip({kDialogWindow.x - 24.0f, kDialogWindow.y - 6.0f, kDialogWindow.w + 48.0f,
                     kDialogWindow.h + 12.0f});

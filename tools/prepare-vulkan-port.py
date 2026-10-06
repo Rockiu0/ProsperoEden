@@ -90,6 +90,89 @@ void RasterizerVulkan::DispatchCompute() {"""),
     ('        std::scoped_lock lock{texture_cache.mutex};\n        texture_cache.WriteMemory(addr, size);\n    }\n    pipeline_cache.InvalidateRegion(addr, size);',
      '        ::Eden::Performance::GuestCacheLock(texture_cache.mutex);\n'
      '        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};\n        texture_cache.WriteMemory(addr, size);\n    }\n    pipeline_cache.InvalidateRegion(addr, size);'),
+    # Development: where OnCPUWrite spends its time (performance.h CpuWriteDetail).
+    ("""    DEBUG_ASSERT(addr != 0 || size != 0);
+    {
+        ::Eden::Performance::GuestCacheLock(buffer_cache.mutex);
+        std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
+        if (buffer_cache.OnCPUWrite(addr, size)) {
+            return true;
+        }
+    }
+    {
+        ::Eden::Performance::GuestCacheLock(texture_cache.mutex);
+        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+        texture_cache.WriteMemory(addr, size);
+    }
+    pipeline_cache.InvalidateRegion(addr, size);
+    return false;
+""",
+     """    DEBUG_ASSERT(addr != 0 || size != 0);
+    // Under the buffer cache lock: mark the buffer pages after this write CPU-modified as their own
+    // first writes would (performance.h cpu_write_ahead), up to a page no buffer covers or one the
+    // GPU modified.
+    const auto write_ahead = [this](DAddr written, u64 written_size) {
+        const unsigned pages = ::Eden::Performance::cpu_write_ahead.load(std::memory_order_relaxed);
+        unsigned marked = 0;
+        DAddr page = Common::AlignDown(written + written_size - 1, Core::DEVICE_PAGESIZE) + Core::DEVICE_PAGESIZE;
+        for (; marked < pages; ++marked, page += Core::DEVICE_PAGESIZE)
+            if (!buffer_cache.IsRegionRegistered(page, Core::DEVICE_PAGESIZE) ||
+                buffer_cache.OnCPUWrite(page, Core::DEVICE_PAGESIZE))
+                break;
+        return marked;
+    };
+    if (::Eden::Performance::cpu_write_detail.load(std::memory_order_relaxed)) [[unlikely]] {
+        using Detail = ::Eden::Performance::CpuWriteDetail;
+        Detail& stats = ::Eden::Performance::cpu_write_stats[::Eden::Performance::cpu_write_core & 3];
+        long long mark = ::Eden::Performance::NowNs();
+        const auto lap = [&](std::atomic<unsigned long long> Detail::*total) {
+            const long long now = ::Eden::Performance::NowNs();
+            (stats.*total).fetch_add(static_cast<unsigned long long>(now - mark), std::memory_order_relaxed);
+            mark = now;
+        };
+        {
+            ::Eden::Performance::GuestCacheLock(buffer_cache.mutex);
+            std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
+            lap(&Detail::buffer_wait_ns);
+            const bool registered = buffer_cache.IsRegionRegistered(addr, size);
+            const bool gpu_modified = buffer_cache.OnCPUWrite(addr, size);
+            lap(&Detail::buffer_ns);
+            (!registered ? stats.unregistered : gpu_modified ? stats.gpu_modified : stats.cpu_modified)
+                .fetch_add(1, std::memory_order_relaxed);
+            if (gpu_modified) {
+                return true;
+            }
+            if (registered)
+                stats.ahead_pages.fetch_add(write_ahead(addr, size), std::memory_order_relaxed);
+            lap(&Detail::buffer_ns);
+        }
+        {
+            ::Eden::Performance::GuestCacheLock(texture_cache.mutex);
+            std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+            lap(&Detail::texture_wait_ns);
+            texture_cache.WriteMemory(addr, size);
+            lap(&Detail::texture_ns);
+        }
+        pipeline_cache.InvalidateRegion(addr, size);
+        lap(&Detail::shader_ns);
+        return false;
+    }
+    {
+        ::Eden::Performance::GuestCacheLock(buffer_cache.mutex);
+        std::lock_guard lock{buffer_cache.mutex, std::adopt_lock};
+        if (buffer_cache.OnCPUWrite(addr, size)) {
+            return true;
+        }
+        write_ahead(addr, size);
+    }
+    {
+        ::Eden::Performance::GuestCacheLock(texture_cache.mutex);
+        std::lock_guard lock{texture_cache.mutex, std::adopt_lock};
+        texture_cache.WriteMemory(addr, size);
+    }
+    pipeline_cache.InvalidateRegion(addr, size);
+    return false;
+"""),
     # Hand recorded work to the worker every 64 draws rather than every 8: each hand-off wakes the
     # worker with a system call (about 16.7k per second and ~7 us each in heavy scenes). A 32 KiB
     # chunk still dispatches whenever it fills (about 15-25 draws of records); the 4,096-draw flush
@@ -140,7 +223,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {'''),
      '    static unsigned poll = 0;\n'
      '    static bool active = false;\n'
      '    if (!active && ::Eden::DevVulkan::trace_pipelines && (++poll & 255) == 0)\n'
-     '        active = std::filesystem::exists("/app0/sync-draws.txt");\n'
+     '        active = std::filesystem::exists("/app0/sync-draws.txt") || std::filesystem::exists("/mnt/sandbox/PPSA99008_000/app0/sync-draws.txt");\n'
      '    return active;\n'
      '}\n'
      'void SyncProbe(Scheduler& scheduler, const char* kind, const void* pipeline) {\n'
@@ -152,9 +235,51 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {'''),
      '    scheduler.Finish();\n'
      '}'),
     ('    prepared_pipeline = pipeline;\n', '    prepared_pipeline = pipeline;\n    probe_pipeline = pipeline;\n'),
+    # Development: how long draw preparation holds the cache locks guest writes wait for.
+    ('    probe_pipeline = pipeline;\n',
+     '    probe_pipeline = pipeline;\n'
+     '    const long long hold_start = ::Eden::Performance::cpu_write_detail.load(std::memory_order_relaxed)\n'
+     '        ? ::Eden::Performance::NowNs() : 0;\n'
+     '    SCOPE_EXIT {\n'
+     '        if (hold_start != 0) ::Eden::Performance::AddSince(::Eden::Performance::draw_cache_hold, hold_start);\n'
+     '    };\n'),
+    # The probe also waits before a draw's preparation: a fault there comes from the work queued
+    # since the last draw (copies, blits, query resolves), not from this draw.
+    ('    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    prepared_pipeline = pipeline;',
+     '    SyncProbe(scheduler, "pre", pipeline);\n'
+     '    std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};\n    prepared_pipeline = pipeline;'),
     ('        }\n    });\n}\n\nvoid RasterizerVulkan::DrawIndirect() {',
-     '        }\n    });\n    SyncProbe(scheduler, "draw", probe_pipeline);\n}\n\nvoid RasterizerVulkan::DrawIndirect() {'),
+     '        }\n    });\n'
+     '    if (SyncProbeActive()) {\n'
+     '        const auto& ds = maxwell3d->draw_manager.draw_state;\n'
+     '        const auto& regs = maxwell3d->regs;\n'
+     '        char text[256];\n'
+     '        int at = std::snprintf(text, sizeof(text), "idx=%d topo=%u n=%u first=%u inst=%u base=%u ib=%llx..%llx fmt=%u vs=",\n'
+     '            int(is_indexed), unsigned(ds.topology), is_indexed ? ds.index_buffer.count : ds.vertex_buffer.count,\n'
+     '            is_indexed ? ds.index_buffer.first : ds.vertex_buffer.first, instance_count, ds.base_index,\n'
+     '            (unsigned long long)ds.index_buffer.StartAddress(), (unsigned long long)ds.index_buffer.EndAddress(),\n'
+     '            unsigned(ds.index_buffer.format));\n'
+     '        for (size_t i = 0; i < regs.vertex_streams.size() && at > 0 && at < int(sizeof(text)) - 40; ++i) {\n'
+     '            const auto& vs = regs.vertex_streams[i];\n'
+     '            if (!vs.enable) continue;\n'
+     '            at += std::snprintf(text + at, sizeof(text) - at, "%zu:%llx/%llx/%u ", i, (unsigned long long)vs.Address(),\n'
+     '                                (unsigned long long)regs.vertex_stream_limits[i].Address(), unsigned(vs.stride));\n'
+     '        }\n'
+     '        ::Eden::Report("drawp", text);\n'
+     '    }\n'
+     '    SyncProbe(scheduler, "draw", probe_pipeline);\n}\n\nvoid RasterizerVulkan::DrawIndirect() {'),
     ('void RasterizerVulkan::DrawTexture() {', 'void RasterizerVulkan::DrawTexture() {\n    SCOPE_EXIT { SyncProbe(scheduler, "draw_texture", nullptr); };'),
+    ('void RasterizerVulkan::DrawIndirect() {\n    const auto& params = maxwell3d->draw_manager.indirect_state;',
+     'void RasterizerVulkan::DrawIndirect() {\n    const auto& params = maxwell3d->draw_manager.indirect_state;\n'
+     '    if (SyncProbeActive()) {\n'
+     '        char text[200];\n'
+     '        std::snprintf(text, sizeof(text), "indirect idx=%d bytes=%d count=%d args=%llx count_at=%llx size=%zu max=%zu stride=%zu xfb=%u",\n'
+     '            int(params.is_indexed), int(params.is_byte_count), int(params.include_count),\n'
+     '            (unsigned long long)params.indirect_start_address, (unsigned long long)params.count_start_address,\n'
+     '            params.buffer_size, params.max_draw_counts, params.stride, unsigned(maxwell3d->regs.transform_feedback_enabled));\n'
+     '        ::Eden::Report("drawp", text);\n'
+     '    }\n'
+     '    SCOPE_EXIT { SyncProbe(scheduler, "draw_indirect", probe_pipeline); };'),
     ('void RasterizerVulkan::Clear(u32 layer_count) {', 'void RasterizerVulkan::Clear(u32 layer_count) {\n    SCOPE_EXIT { SyncProbe(scheduler, "clear", nullptr); };'),
     ('    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};\n    if (!pipeline) {\n        return;\n    }',
      '    ComputePipeline* const pipeline{pipeline_cache.CurrentComputePipeline()};\n    if (!pipeline) {\n        return;\n    }\n'
@@ -379,6 +504,8 @@ adapt('src/video_core/vulkan_common/vulkan_device.cpp', 'vulkan_device.cpp', [
      '        const u64 free_bytes = static_cast<u64>(static_cast<double>(free_memory()) * scale);\n'
      '        return device_access_memory > free_bytes ? device_access_memory - free_bytes : 0;\n'
      '    }\n'),
+    ('    extensions.transform_feedback =\n        features.transform_feedback.transformFeedback &&',
+     '    extensions.transform_feedback =\n        !::Eden::DevVulkan::disable_transform_feedback &&\n        features.transform_feedback.transformFeedback &&'),
     ('    extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer;',
      '    extensions.descriptor_buffer = features.descriptor_buffer.descriptorBuffer &&\n'
      '        !::Eden::DevVulkan::disable_descriptor_buffer;'),

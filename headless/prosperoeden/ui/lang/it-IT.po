@@ -1313,3 +1313,12 @@ msgstr "{0}/ (NSP o XCI)"
 #: pe/ui/browse.cpp
 msgid "{0}/ (one folder per game ID)"
 msgstr "{0}/ (una cartella per ID titolo)"
+
+#. Game setting: show at 60 FPS the frames a game asks to show at 30 FPS.
+#: pe/ui/library.cpp
+msgid "Keep 60 FPS"
+msgstr "60 FPS fissi"
+
+#: pe/ui/library.cpp
+msgid "Saved. If the game then runs too fast, turn this off."
+msgstr "Salvato. Se il gioco poi va troppo veloce, disattivalo."

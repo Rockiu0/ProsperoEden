@@ -10,7 +10,7 @@
 
 **ProsperoEden is an unofficial PlayStation 5 port of [Eden](https://github.com/eden-emulator/mirror)** - an accurate, high-performance emulator. All credit for the emulator core belongs to the Eden project and its contributors. ProsperoEden is not affiliated with or endorsed by the Eden team or Sony.
 
-This is an early alpha. Video, audio, controller input, and saves have been confirmed working. Compatibility and performance will vary between games. The current release is **v1.000.040**.
+This is an early alpha. Video, audio, controller input, and saves have been confirmed working. Compatibility and performance will vary between games. The current release is **v1.000.041**.
 
 ## Source code
 
@@ -173,6 +173,19 @@ The launcher follows the language the PS5 is set to: Arabic, Chinese (simplified
 ### Upgrading from an earlier alpha
 
 Earlier versions read everything from `/data/homebrew/PPSA99008/assets/`. That folder keeps working until you choose a game files folder, and settings are migrated automatically on first launch. To move to the new layout, move `assets/keys`, `assets/firmware` and `assets/roms` into any folder, then select it in **Settings > Game files**. The release ZIP contains no user files, so copy its app files over your installation without deleting your own data.
+
+## Changes in v1.000.041
+
+Faster emulated CPU. Measured standing in the busiest room of a CPU-bound 3D game: 44.7 FPS in v1.000.040, 60 (the game's cap) now.
+
+- **Guest writes to graphics buffers no longer wait on the GPU thread.** The first write of a frame to each page of a buffer the GPU uses goes through the GPU caches, which the GPU thread keeps locked while it prepares each draw. A game writing about 3,300 such pages per frame spent a third of two emulated cores waiting there. A write now also marks the next 64 pages of the same buffer as written, as their own first writes would; it stops at a page no buffer covers or one the GPU has written, and images and shaders keep their own tracking. In that room: 48.6 FPS before, 60 after, with the waits falling from about 159,000 to 4,500 a second.
+- **Faster memory accesses in translated code.** Every load and store of a 64-bit or 32-bit game looked up its page in a packed table and decoded the entry (about 12 instructions and 4 branches). The table now keeps, beside each entry, the ready host offset the generated code adds to the address, so an access is a load, a test and the access itself. The same room went from 44.7 to 49.3 FPS with this alone, and a large open-world game patched for 60 FPS from 32.1 to 36.4 FPS.
+- **Less waiting in the emulated kernel.** Guest kernel spin locks spin (about 4,000 PAUSE iterations) before blocking, so an uncontended wait no longer sleeps through the console's kernel (34 to about 50 FPS in a 3D scene of a CPU-bound game). Idle emulated cores spin 500 us before sleeping, so a wakeup right after idling costs no kernel round trip.
+- **Smoother 60 FPS pacing.** Presentation waits 1.5 ms after vsync to compose, so a 60 FPS game is not held to 40, and the GPU command queue holds 256 entries instead of 8, so a game's render thread no longer blocks in heavy scenes.
+- **Worker threads on the intended cores.** The CPU topology probe falls back to the initial APIC ID when the console reports the same x2APIC ID on every CPU, so the emulated cores and the GPU thread each get a physical core of their own.
+- **Keep 60 FPS** (Library > a game's settings): frames a game queues for 30 FPS are shown at 60. Off unless you turn it on.
+- **Faster game file reads.** Read-only game files are read with 1 MiB read-ahead blocks: 88 MB/s before, 700-1,380 MB/s now.
+- **Fixes.** Two games no longer share one cache storage folder (a 100-second boot when their shader caches collided); out-of-bounds shader local memory accesses are clamped instead of faulting the GPU; a geometry-shader emulation pass that cannot prepare a draw no longer writes to address 0 (GPU page faults in combat scenes); plain CPU reads of GPU-cached pages skip the download unless reactive flushing is on.
 
 ## Changes in v1.000.040
 

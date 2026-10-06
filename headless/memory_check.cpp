@@ -18,6 +18,7 @@
 #include "dynarmic/interface/A64/a64.h"
 #include "dynarmic/interface/exclusive_monitor.h"
 #include "common/host_memory.h"
+#include "common/page_table.h"
 #include "common/sparse_large_vector.h"
 #include "../src/fastmem.h"
 #include <csignal>
@@ -674,6 +675,10 @@ static void CheckFastmemA32() {
     require(stats.mapped_pages == 16 + 8 + 4 + 3 + 8);
     // Direct reads: A (16), C (4), E (8) minus the tracked page and its predecessor.
     require(stats.direct_reads == 16 - 1 + 4 - 1 + 8 - 2 - 1);
+    // Never direct: B's 8 out-of-phase pages, D's 3 pages left in a partly unmapped chunk, the
+    // tracked page (no access) and C's read-only pages (no writes).
+    require(stats.out_of_phase == 8 && stats.unaliased_other == 3);
+    require(stats.access_read_blocked == 1 && stats.access_write_blocked == 4 + 1);
 
     unsigned cases = 0;
     const auto run = [&](const std::vector<uint32_t>& program, uint32_t address, uint32_t count, uint32_t iterations,
@@ -726,10 +731,14 @@ static void CheckFastmemA32() {
         {0x400000, 0xc00, 0},        // partially unmapped chunk: page table
         {0x500000, 0x2000, 2 * 2048}, // tracked page: callbacks for its 1024 words, both passes
     };
+    const auto demotions_before = Eden::Fastmem::Demotions();
     for (const auto& c : increments) {
         fill(c.address, c.words);
         run(increment, c.address, c.words, 0, c.callbacks, incremented(c.address, c.words));
     }
+    // The loops over unaliased, read-only, partly unmapped and tracked pages keep finding
+    // them blocked: their LDR/STR sites move to the page-table path with the same results.
+    require(Eden::Fastmem::Demotions() > demotions_before);
     // Unaligned word loads ending two bytes into the next page: direct only when both
     // pages allow it, otherwise the page-table path's crossing check calls back.
     // ldr r3,[r0]; subs r1,r1,#1; bne loop; svc #0
@@ -785,6 +794,15 @@ static void CheckFastmemA32() {
     run(increment, 0x600100, 1, 0, 2, [&](uint32_t) {
         uint32_t value; std::memcpy(&value, host_at(0x600100), 4); return value == 2;
     }, 2);                                       // LDR and STR each fault once
+    // fastmem_sites=off: same window, every access on the page table, so nothing faults on
+    // the raced chunk and no site is demoted.
+    Eden::Fastmem::RequestSites(false);
+    const auto demotions_sites_off = Eden::Fastmem::Demotions();
+    copy(false, 0x600000, 0x502000, 1, 0);
+    copy(true, 0x100000, 0x600008, 1, 0);
+    run(increment, 0x200000, 0x2000, 0, 0, [](uint32_t) { return true; });
+    require(Eden::Fastmem::Demotions() == demotions_sites_off);
+    Eden::Fastmem::RequestSites(true);
     // ldrex r1,[r0]; add r1,r1,#1; strex r2,r1,[r0]; cmp r2,#0; bne loop; subs r3,r3,#1; bne loop; svc #0
     const std::vector<uint32_t> atomic{0xe1901f9fu, 0xe2811001u, 0xe1802f91u, 0xe3520000u, 0x1afffffau,
                                        0xe2533001u, 0x1afffff8u, 0xef000000u};
@@ -799,6 +817,18 @@ static void CheckFastmemA32() {
     host.Map(0x300000, 0x40000, 0x4000, MemoryPermission::ReadWrite, false);
     stats = Eden::Fastmem::WindowStats();
     require(stats.aliased_chunks == 1 + 2 + 1 && stats.failures == 0); // C, E and the race chunk remain
+    // A whole 2 MiB block over 2 MiB-aligned backing becomes one large mapping; withdrawing a
+    // chunk of it first returns the block to 16 KiB mappings, and the rest stays direct.
+    require(stats.large_blocks == 0);
+    fixture.Map({0x800000, 0x200000, 0x200000});
+    require(Eden::Fastmem::WindowStats().large_blocks == 1);
+    fill(0x800000, 0x80000);
+    run(increment, 0x800000, 0x80000, 0, 0, incremented(0x800000, 0x80000));
+    host.Unmap(0x9fc000, 0x4000, false);
+    stats = Eden::Fastmem::WindowStats();
+    require(stats.large_blocks == 0 && stats.aliased_chunks == 1 + 2 + 1 + 127 && stats.failures == 0);
+    fill(0x800000, 0x7f000);
+    run(increment, 0x800000, 0x7f000, 0, 0, incremented(0x800000, 0x7f000));
     std::printf("Fastmem A32 PASS: %u cases, %llu faults, %llu kernel calls\n", cases,
                 static_cast<unsigned long long>(Eden::Fastmem::Faults()),
                 static_cast<unsigned long long>(stats.kernel_calls));
@@ -806,7 +836,8 @@ static void CheckFastmemA32() {
 
 // Checked fastmem under concurrency: three JIT workers increment their own slices of an
 // aliased region while a mutator flips GPU-style tracking (access byte + marked PTE) on
-// random pages and a reader runs over a region that is repeatedly unmapped and mapped.
+// random pages and a reader runs over a 2 MiB region that is repeatedly unmapped and mapped
+// (and so moved between a large mapping and 16 KiB ones).
 // Every access path writes the same backing, so the slices must end exact.
 static void StressFastmemA32() {
     using Common::MemoryPermission;
@@ -815,7 +846,7 @@ static void StressFastmemA32() {
     Eden::Fastmem::Request(false);
     require(fixture.host.VirtualBasePointer() != nullptr);
     constexpr uint32_t hot = 0x100000, hot_bytes = 0x30000, slice = 0x10000;
-    constexpr uint32_t cold = 0x800000, cold_bytes = 0x10000;
+    constexpr uint32_t cold = 0x800000, cold_bytes = 0x200000;
     fixture.Map({hot, 0x100000, hot_bytes});
     fixture.Map({cold, 0x200000, cold_bytes});
     std::memset(fixture.backing + 0x100000, 0, hot_bytes);
@@ -844,7 +875,7 @@ static void StressFastmemA32() {
     const auto before = Eden::Fastmem::Faults();
     std::vector<std::thread> threads;
     for (uint32_t i = 0; i < 3; ++i) threads.emplace_back(worker, increment, hot + i * slice, slice / 4, passes);
-    threads.emplace_back(worker, scan, cold, cold_bytes / 4, passes * 4);
+    threads.emplace_back(worker, scan, cold, cold_bytes / 4, passes / 2);
     unsigned flips = 0, remaps = 0;
     uint32_t seed = 1;
     while (running.load()) {
@@ -870,6 +901,7 @@ static void StressFastmemA32() {
         uint32_t value; std::memcpy(&value, fixture.backing + 0x100000 + at, 4);
         require(value == passes);
     }
+    require(Eden::Fastmem::WindowStats().large_blocks == 1); // the reader's region, mapped again
     std::printf("Fastmem A32 stress PASS: %u flips, %u remaps, %llu callbacks, %llu faults\n", flips, remaps,
                 callbacks.load(), static_cast<unsigned long long>(Eden::Fastmem::Faults() - before));
 }
@@ -1337,6 +1369,90 @@ static void CheckSparseTables() {
               "six threads on shared slots, an unmap that touches only what was written");
 }
 
+// The JIT's direct page table (headless/jit-page-table.cmake). Every PageEntryData write keeps a
+// page's direct value equal to the entry's pointer, 0 when marked or empty; a first write in an
+// untouched part of the table commits the mirror too (the mirror store would fault otherwise);
+// an A64 JIT given the direct table loads and stores through it and calls back for a page that
+// is marked, cleared or out of range.
+static void CheckDirectPageTable(uint8_t* backing) {
+    using Common::PageType;
+    Common::PageTable table;
+    table.Resize(39, 12);
+    require(Common::PageTable::DirectTables() && table.DirectTable() != nullptr);
+    const auto* direct = static_cast<const volatile uint64_t*>(table.DirectTable());
+    const std::size_t mirror = table.entries.mirror_index;
+    unsigned cases = 0;
+    const uint64_t near = 0x100000, far = (uint64_t{1} << 38) + 0x5000;
+    const auto pointer = [&](uint64_t vaddr) { return reinterpret_cast<uintptr_t>(backing) - vaddr; };
+    for (uint64_t vaddr : {near, far}) {
+        const std::size_t page = vaddr >> 12;
+        table.entries.CommitRegion(page, page + 1);
+        auto& entry = table.entries.GetUnchecked(page);
+        entry.Store(false, PageType::Memory, 5, pointer(vaddr));
+        require(entry.Pointer() == pointer(vaddr) && direct[page] == pointer(vaddr));
+        entry.MarkRasterizerCached();
+        require(entry.Pointer() == 0 && direct[page] == 0);
+        entry.Store(false, PageType::Memory, 5, entry.Pointer(true));
+        require(direct[page] == pointer(vaddr));
+        entry.MarkDebug(pointer(vaddr), 5);
+        require(direct[page] == 0);
+        entry.Store(false, PageType::Unmapped, 5, 0);
+        require(direct[page] == 0 && direct[page - 1] == 0 && direct[page + 1] == 0);
+        entry.Store(false, PageType::Memory, 5, pointer(vaddr));
+        cases += 5;
+    }
+    // An unmap (core/memory.cpp) zeroes the direct values, then the entries.
+    table.entries.ZeroRegion((near >> 12) + mirror, (near >> 12) + 1 + mirror);
+    table.entries.ZeroRegion(near >> 12, (near >> 12) + 1);
+    require(direct[near >> 12] == 0 && table.entries[near >> 12].Pointer() == 0 && direct[far >> 12] == pointer(far));
+    table.entries.GetUnchecked(near >> 12).Store(false, PageType::Memory, 5, pointer(near));
+    ++cases;
+
+    Memory<false> memory;
+    A64::UserConfig config{};
+    config.callbacks = &memory;
+    config.enable_cycle_counting = false;
+    config.code_cache_size = 16 * 1024 * 1024;
+    config.page_table = static_cast<void**>(table.DirectTable());
+    config.page_table_address_space_bits = 39;
+    config.silently_mirror_page_table = false;
+    config.absolute_offset_page_table = true;
+    config.detect_misaligned_access_via_page_table = 16 | 32 | 64 | 128;
+    config.only_detect_misalignment_via_page_table_on_page_boundary = true;
+    A64::Jit jit{config};
+    memory.jit = &jit;
+    const auto run = [&](bool write, uint64_t vaddr) {
+        memory.instruction = write ? 0xf9000001u : 0xf9400001u; // str/ldr x1, [x0]
+        memory.address = vaddr;
+        memory.reads = memory.writes = 0;
+        jit.Reset(); jit.ClearHalt(~HaltReason{}); jit.ClearCache();
+        jit.SetPC(0x1000); jit.SetRegister(0, vaddr); jit.SetRegister(1, write ? memory.value[0] : 0);
+        require(jit.Run() == HaltReason::UserDefined1);
+        ++cases;
+        return jit.GetRegister(1);
+    };
+    for (uint64_t vaddr : {near, far}) {
+        auto& entry = table.entries.GetUnchecked(vaddr >> 12);
+        const uint64_t stored = 0x0123456789abcdefULL ^ vaddr;
+        std::memcpy(backing, &stored, 8);
+        require(run(false, vaddr) == stored && memory.reads == 0);
+        std::memset(backing, 0, 8);
+        run(true, vaddr);
+        require(memory.writes == 0 && std::memcmp(backing, &memory.value[0], 8) == 0);
+        entry.MarkRasterizerCached();
+        require(run(false, vaddr) == memory.value[0] && memory.reads == 1);
+        run(true, vaddr);
+        require(memory.writes == 1);
+        entry.Store(false, PageType::Memory, 5, entry.Pointer(true));
+        std::memcpy(backing, &stored, 8);
+        require(run(false, vaddr) == stored && memory.reads == 0);
+    }
+    require(run(false, uint64_t{1} << 39) == memory.value[0] && memory.reads == 1); // out of range
+    require(run(false, 0x200000) == memory.value[0] && memory.reads == 1);          // never mapped
+    std::memset(backing, 0, 8);
+    std::printf("Direct page table PASS: %u cases\n", cases);
+}
+
 int main(int argc, char** argv) {
     CheckSparseTables();
     if (argc == 2 && std::strcmp(argv[1], "--link-check") == 0) {
@@ -1362,8 +1478,24 @@ int main(int argc, char** argv) {
         CheckFastmemA32();
         return 0;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--direct-table") == 0) {
+        auto* page = static_cast<uint8_t*>(mmap(nullptr, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+        require(page != MAP_FAILED);
+        CheckDirectPageTable(page);
+        require(munmap(page, 8192) == 0);
+        return 0;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--fastmem-bench") == 0) {
         BenchFastmemA32();
+        return 0;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--fastmem-alias") == 0) {
+        // EDEN_FASTMEM_ALIAS on this host: the window self-measures when created.
+        Eden::Fastmem::RequestAliasBench(true);
+        Eden::Fastmem::Request(true);
+        { FastmemFixture fixture; require(fixture.host.VirtualBasePointer() != nullptr); }
+        Eden::Fastmem::Request(false);
+        Eden::Fastmem::RequestAliasBench(false);
         return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--fastmem-stress") == 0) {
@@ -1405,6 +1537,7 @@ int main(int argc, char** argv) {
     CheckBlockList();
     CheckBlockListFile();
     CheckLinks();
+    CheckDirectPageTable(backing);
     CheckFastmemA32();
     StressFastmemA32();
     require(munmap(backing, 8192) == 0);

@@ -115,6 +115,7 @@ struct GameSettings
     int resolution = -1;
     int filter = -1;
     int refresh = -1;
+    int keep_60 = -1; // 1: Keep 60 FPS
 };
 
 // One cheat of a mod that lists several: each is chosen on its own.
