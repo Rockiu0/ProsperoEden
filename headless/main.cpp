@@ -756,6 +756,9 @@ int main(int argc, char** argv) {
                     // One engine call per GPU command word, as upstream (performance.h dma_batch).
                     Eden::Performance::dma_batch = false;
                     std::printf("EDEN_DEV_DMA_BATCH 0\n");
+                } else if (entry.starts_with("slow_frame_ms=")) {
+                    // Frames slower than this are logged one by one (EDEN_SLOW_FRAME; 0 = off).
+                    Eden::Performance::slow_frame_ms = static_cast<unsigned>(std::min(1000UL, std::strtoul(entry.c_str() + 14, nullptr, 10)));
                 } else if (entry.starts_with("dispatch_draws=")) {
                     // Draws between Vulkan worker hand-offs: a power of two from 8 (upstream) to 512.
                     const unsigned long draws = std::strtoul(entry.c_str() + 15, nullptr, 10);

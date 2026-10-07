@@ -640,6 +640,18 @@ void GraphicsWindow::OnFrameDisplayed() {
             const double interval_ms = (now - frame_sample_last) * 1000.0;
             ++interval_hist[interval_ms < 12.5 ? 4 : interval_ms < 20.0 ? 0 : interval_ms < 36.0 ? 1 :
                             interval_ms < 52.0 ? 2 : 3];
+            if (const unsigned slow_ms = Eden::Performance::slow_frame_ms.load(std::memory_order_relaxed);
+                slow_ms != 0 && interval_ms >= slow_ms) {
+                static unsigned slow_lines = 0;
+                if (slow_lines < 20000) {
+                    ++slow_lines;
+                    timespec mono{};
+                    clock_gettime(CLOCK_MONOTONIC, &mono);
+                    std::printf("EDEN_SLOW_FRAME mono_ns=%lld ms=%.3f frame=%u\n",
+                                static_cast<long long>(mono.tv_sec) * 1'000'000'000LL + mono.tv_nsec,
+                                interval_ms, frame_total);
+                }
+            }
 #endif
             frame_sample_last = now;
             if (now - frame_sample_start >= 5.0) {

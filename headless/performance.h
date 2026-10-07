@@ -101,6 +101,11 @@ inline std::atomic<unsigned> cpu_write_ahead{64};
 // executes) is handed to the engine's pending-write list in one pass instead; registers that start
 // work keep the per-word path. dev-settings dma_batch=off restores one call per word (upstream).
 inline std::atomic<bool> dma_batch{true};
+// Development: every presented frame that took at least this many milliseconds since the previous
+// one is logged on its own (EDEN_SLOW_FRAME, with the CLOCK_MONOTONIC time the EDEN_PERF_* samples
+// use), so a short drop can be matched to what the cores were doing. dev-settings slow_frame_ms=N
+// (0 = off); at most 20,000 lines a session.
+inline std::atomic<unsigned> slow_frame_ms{40};
 // Development (EDEN_DEV_GPU): incrementing runs taken in one pass, their words, and the data words
 // that went through the per-word path. Written by the GPU thread only.
 inline std::atomic<unsigned long long> dma_batch_runs{}, dma_batch_words{}, dma_single_words{};
