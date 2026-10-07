@@ -96,6 +96,14 @@ inline std::array<CpuWriteDetail, 4> cpu_write_stats{};
 // with 64, the trips falling from 159,000 to 4,500 a second. dev-settings cpu_write_ahead=N
 // (0-256) overrides it.
 inline std::atomic<unsigned> cpu_write_ahead{64};
+// The GPU command interpreter (DmaPusher::ProcessCommands) calls out once per data word. An
+// incrementing write whose registers only store their value (no engine work until a later method
+// executes) is handed to the engine's pending-write list in one pass instead; registers that start
+// work keep the per-word path. dev-settings dma_batch=off restores one call per word (upstream).
+inline std::atomic<bool> dma_batch{true};
+// Development (EDEN_DEV_GPU): incrementing runs taken in one pass, their words, and the data words
+// that went through the per-word path. Written by the GPU thread only.
+inline std::atomic<unsigned long long> dma_batch_runs{}, dma_batch_words{}, dma_single_words{};
 // The guest core of the write OnCPUWrite serves, set by HandleRasterizerWrite.
 inline thread_local unsigned cpu_write_core = 3;
 // The GPU thread's buffer and texture cache hold per draw preparation, with cpu_write_detail.

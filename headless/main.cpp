@@ -749,6 +749,10 @@ int main(int argc, char** argv) {
                 } else if (entry == "gc_dirty=upstream") {
                     // Eden's rule: evict GPU-written textures from the "expected" memory mark on.
                     Eden::Performance::gc_keep_dirty = false;
+                } else if (entry == "dma_batch=off") {
+                    // One engine call per GPU command word, as upstream (performance.h dma_batch).
+                    Eden::Performance::dma_batch = false;
+                    std::printf("EDEN_DEV_DMA_BATCH 0\n");
                 } else if (entry.starts_with("dispatch_draws=")) {
                     // Draws between Vulkan worker hand-offs: a power of two from 8 (upstream) to 512.
                     const unsigned long draws = std::strtoul(entry.c_str() + 15, nullptr, 10);
