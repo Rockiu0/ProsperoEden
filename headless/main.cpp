@@ -104,6 +104,8 @@ extern "C" std::int64_t sceKernelGetDirectMemorySize();
 extern "C" bool eden_jit_shared;  // headless/dynarmic/jit_group_support.inc
 extern "C" bool eden_page_reuse;  // headless/dynarmic/page_reuse_pass.inc
 extern "C" unsigned long long eden_page_reuse_groups, eden_page_reuse_accesses;
+extern "C" bool eden_free_moves;  // headless/dynarmic/reg_alloc.cmake
+extern "C" unsigned long long eden_free_moves_done, eden_free_moves_spilled;
 #endif
 #include "video_core/gpu.h"
 #include "profiles.h"
@@ -787,6 +789,9 @@ int main(int argc, char** argv) {
                 } else if (entry == "jit_page_reuse=off") {
                     // One page-table lookup per A64 access, as upstream (headless/dynarmic/page-reuse.cmake).
                     eden_page_reuse = false;
+                } else if (entry == "jit_free_moves=off") {
+                    // Registers moved out of the way go to the stack, as upstream (headless/dynarmic/reg_alloc.cmake).
+                    eden_free_moves = false;
                 } else if (entry == "jit_shared=off") {
                     // Every guest core keeps its own compiled blocks (headless/dynarmic/jit_group.h).
                     eden_jit_shared = false;
@@ -1606,6 +1611,10 @@ int main(int argc, char** argv) {
                                         std::printf("EDEN_JIT_PAGE_REUSE enabled=%d groups=%llu accesses=%llu\n", eden_page_reuse ? 1 : 0,
                                                     __atomic_load_n(&eden_page_reuse_groups, __ATOMIC_RELAXED),
                                                     __atomic_load_n(&eden_page_reuse_accesses, __ATOMIC_RELAXED));
+                                    if (poll == 0)
+                                        std::printf("EDEN_JIT_FREE_MOVES enabled=%d moves=%llu spills=%llu\n", eden_free_moves ? 1 : 0,
+                                                    __atomic_load_n(&eden_free_moves_done, __ATOMIC_RELAXED),
+                                                    __atomic_load_n(&eden_free_moves_spilled, __ATOMIC_RELAXED));
                                     if (jit_table_check && poll == 0) {
                                         if (auto* process = system.ApplicationProcess())
                                             CheckDirectTable(process->GetPageTable().GetImpl());
