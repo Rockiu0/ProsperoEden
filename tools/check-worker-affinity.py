@@ -27,6 +27,7 @@ static bool fail_restore=false;
 static constexpr std::array names{"CPUCore_0","CPUCore_1","CPUCore_2","CPUCore_3","GPU"};
 static unsigned __get_cpuid_max(unsigned,void*) {return max_leaf;}
 #define __cpuid_count(l,s,a,b,c,d) do {a=1;b=2;c=level_type<<8;d=apics[__builtin_ctzll(current)];} while(0)
+#define __cpuid(l,a,b,c,d) do {a=1;b=apics[__builtin_ctzll(current)]<<24;c=0;d=0;} while(0)
 static int cpuset_getaffinity(int,int,int,size_t n,cpuset_t* out){assert(n==8);*out=current;return 0;}
 static int cpuset_setaffinity(int,int,int,size_t n,const cpuset_t* in){
  assert(n==8 && *in && !(*in&~0x1fffULL));
@@ -45,14 +46,14 @@ int main(){
  PinWorker(5,allowed);assert(current==0x1fff);
  for(unsigned i=0;i<7;++i) apics[i]=i*2;
  for(unsigned i=7;i<13;++i) apics[i]=(i-7)*2+1;
- CheckWorkerTopology();assert((worker_cpus==std::array<unsigned,5>{0,1,2,3,4}) && current==0x1fff);
- current=3;CheckWorkerTopology();assert(!worker_topology_ready && current==3);
- current=0x1fff;fail_mask=4;CheckWorkerTopology();assert(!worker_topology_ready && current==0x1fff);
- fail_mask=0;level_type=0;CheckWorkerTopology();assert(!worker_topology_ready && current==0x1fff);
- level_type=1;CheckWorkerTopology();assert(worker_topology_ready);
+ worker_topology_ready=false;CheckWorkerTopology();assert((worker_cpus==std::array<unsigned,5>{0,1,2,3,4}) && current==0x1fff);
+ current=3;worker_topology_ready=false;CheckWorkerTopology();assert(!worker_topology_ready && current==3);
+ current=0x1fff;fail_mask=4;worker_topology_ready=false;CheckWorkerTopology();assert(!worker_topology_ready && current==0x1fff);
+ fail_mask=0;level_type=0;worker_topology_ready=false;CheckWorkerTopology();assert(worker_topology_ready && current==0x1fff);
+ level_type=1;worker_topology_ready=false;CheckWorkerTopology();assert(worker_topology_ready);
  fail_mask=16;allowed=current;PinWorker(4,allowed);assert(allowed==0x1fff && current==0x1fff);
  fail_mask=0;fail_restore=true;bool threw=false;
- try{CheckWorkerTopology();}catch(const std::runtime_error&){threw=true;}
+ try{worker_topology_ready=false;CheckWorkerTopology();}catch(const std::runtime_error&){threw=true;}
  assert(threw);
  return 0;
 }

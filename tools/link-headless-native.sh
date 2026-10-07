@@ -36,6 +36,7 @@ fi
     --defsym=__dlopen=0 --defsym=__dlsym=0 --defsym=__dladdr=0 \
     --defsym=__dlclose=0 --defsym=__dlerror=0 \
     -T "$template/tooling/native/ps5-pie.ld" -T "$root/tools/unwind.ld" \
+    -z nodynamic-undefined-weak \
     --eh-frame-hdr --gc-sections --version-script "$root/tools/app-symbols.map" -e _start \
     --error-limit=0 -Map="$output.map" \
     --wrap=aligned_alloc --wrap=malloc --wrap=calloc --wrap=realloc --wrap=free \

@@ -29,6 +29,19 @@ if [[ ! -f $eden/CMakeLists.txt ]]; then
 fi
 printf '%s\n' '5f142c7926d0c7fcbbd0ce30794d72f638a43b2a' > "$eden/GIT-COMMIT"
 printf '%s\n' 'ps5-headless' > "$eden/GIT-REFSPEC"
+# Fixes to Eden's own source (tools/eden-patches, in name order), each applied once: a patch that
+# reverses cleanly is already in the tree. One that neither reverses nor applies was changed after
+# an earlier version of it went in: the files it touches come back from the pinned archive first.
+command -v patch >/dev/null || { echo "patch is required (apt install patch)" >&2; exit 1; }
+for eden_patch in tools/eden-patches/*.diff; do
+    if patch -d "$eden" -p1 -R --dry-run -s -f < "$eden_patch" >/dev/null 2>&1; then continue; fi
+    step "Eden patch $(basename "$eden_patch")"
+    if ! patch -d "$eden" -p1 -N --dry-run -s -f < "$eden_patch" >/dev/null 2>&1; then
+        sed -n 's|^+++ b/||p' "$eden_patch" | sed 's|^|mirror-5f142c7926d0c7fcbbd0ce30794d72f638a43b2a/|' |
+            xargs tar -xzf .deps/eden-5f142c79.tar.gz --strip-components=1 -C "$eden"
+    fi
+    patch -d "$eden" -p1 -N -s < "$eden_patch" || { echo "$eden_patch does not apply to Eden's source" >&2; exit 1; }
+done
 # Optional: seed Eden's package cache from another checkout's (CI reuses a development cache).
 if [[ -n ${EDEN_CPM_CACHE_SEED:-} && ! -d $eden/.cache/cpm ]]; then
     step "Eden package cache from $EDEN_CPM_CACHE_SEED"
