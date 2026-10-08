@@ -1098,6 +1098,15 @@ foreach(pair IN ITEMS tracked collect)
     endif()
     string(REPLACE "${${pair}_old}" "${${pair}_new}" arena_source "${arena_source}")
 endforeach()
+# Every collected range (GPU-modified pages, and writes deferred past a held cache lock) is applied by
+# the GPU thread before its next command list (performance.h cpu_write_defer).
+set(collect_line "            gpu_dirty_managers[core].Collect(address, size);\n")
+string(FIND "${arena_source}" "${collect_line}" collect_line_at)
+if(collect_line_at LESS 0)
+    message(FATAL_ERROR "Pinned GPU dirty collection changed")
+endif()
+string(REPLACE "${collect_line}" "${collect_line}            if (::Eden::Performance::cpu_write_defer.load(std::memory_order_relaxed))
+                ::Eden::Performance::gpu_dirty_pending.store(true, std::memory_order_release);\n" arena_source "${arena_source}")
 string(PREPEND arena_source "#include \"${EDEN_PORT_DIR}/performance.h\"\n")
 if(EDEN_A32_FASTMEM)
     # The window spans 4 GiB: only 32-bit applications get it as their fastmem arena.
@@ -2194,6 +2203,19 @@ ${dma_count_run}
 ${dma_count_word}
             auto const command_header = commands[index]; //can copy
 " command_source "${command_source}")
+            # Guest writes collected while a cache lock was held (performance.h cpu_write_defer) reach the
+            # caches before the GPU thread runs work submitted after them.
+            set(dispatch_old "void DmaPusher::DispatchCalls() {\n")
+            string(FIND "${command_source}" "${dispatch_old}" dispatch_at)
+            if(dispatch_at LESS 0)
+                message(FATAL_ERROR "Pinned DmaPusher::DispatchCalls changed")
+            endif()
+            string(REPLACE "${dispatch_old}" [=[void DmaPusher::DispatchCalls() {
+    if (::Eden::Performance::gpu_dirty_pending.exchange(false, std::memory_order_acq_rel)) {
+        ::Eden::Performance::gpu_dirty_replays.fetch_add(1, std::memory_order_relaxed);
+        system.GPU().InvalidateGPUCache();
+    }
+]=] command_source "${command_source}")
             string(PREPEND command_source "#include <atomic>\n#include \"${EDEN_PORT_DIR}/performance.h\"\n")
         endif()
         string(PREPEND command_source "#include <chrono>\n")
