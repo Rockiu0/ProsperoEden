@@ -127,6 +127,10 @@ inline void GuestCacheLock(Mutex& mutex) {
 // Guest waits: nvhost_ctrl syncpoint event registration -> signal, and
 // BufferQueueProducer::DequeueBuffer waiting for a free buffer slot.
 inline Totals guest_sync_wait, guest_dequeue_wait;
+// GPU::OnCPURead: a guest read of GPU-written data that waits for the GPU worker to download it
+// (calls, wall ns, bytes of the flushed area), and reads the texture cache answered without a wait.
+inline Totals guest_read_download;
+inline std::atomic<unsigned long long> guest_read_preemptive{};
 // fsp-srv IFile/IStorage reads (guest asset streaming): time in the backend and bytes.
 inline Totals guest_fs_file, guest_fs_storage;
 inline std::atomic<unsigned long long> guest_fs_file_bytes{}, guest_fs_storage_bytes{};

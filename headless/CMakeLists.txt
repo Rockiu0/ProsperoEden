@@ -2215,6 +2215,25 @@ ${dma_count_word}
         gpu_source "${gpu_source}")
     if(EDEN_DEV_PROFILE)
         string(PREPEND gpu_source "#include \"${EDEN_PORT_DIR}/performance.h\"\n")
+        # The guest's wait for a GPU download in OnCPURead (EDEN_DEV_GUEST read_download_*); the
+        # rasterizer's cpu_read timer covers only the lookup before it.
+        set(read_download_old [=[        if (raster_area.preemtive) {
+            return raster_area;
+        }
+        raster_area.preemtive = true;
+]=])
+        string(FIND "${gpu_source}" "${read_download_old}" read_download_offset)
+        if(read_download_offset LESS 0)
+            message(FATAL_ERROR "Pinned GPU OnCPURead changed")
+        endif()
+        string(REPLACE "${read_download_old}" [=[        if (raster_area.preemtive) {
+            ::Eden::Performance::guest_read_preemptive.fetch_add(1, std::memory_order_relaxed);
+            return raster_area;
+        }
+        ::Eden::Performance::Timer eden_download_timer(::Eden::Performance::guest_read_download,
+                                                       raster_area.end_address - raster_area.start_address);
+        raster_area.preemtive = true;
+]=] gpu_source "${gpu_source}")
         string(REPLACE "    if (count <= 3) LOG_INFO(Render_OpenGL, \"EDEN_GUEST_GPU_SUBMIT count={} channel={}\", count, channel);"
             "    if (count <= 3 || ::Eden::Performance::BootTrace()) LOG_INFO(Render_OpenGL, \"EDEN_GUEST_GPU_SUBMIT count={} channel={} entries={}\", count, channel, entries.command_lists.size());"
             gpu_source "${gpu_source}")
