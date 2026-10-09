@@ -920,6 +920,17 @@ adapt('src/video_core/texture_cache/texture_cache.h',
     # measured ~1.9 GiB working set triggered dirty eviction at the old 1.6 GiB
     # threshold despite a 4 GiB budget. Retain 40% headroom; keep the original
     # critical threshold and minimum 1 GiB spacing. OpenGL remains unchanged.
+    # Development: each upload's image and time (performance.h CountTextureUpload).
+    ('    image.flags &= ~ImageFlagBits::CpuModified;\n\n    TrackImage(image, image_id);',
+     '    image.flags &= ~ImageFlagBits::CpuModified;\n'
+     '    const long long upload_start = Eden::Performance::NowNs();\n'
+     '    SCOPE_EXIT {\n'
+     '        if constexpr (std::is_same_v<Runtime, Vulkan::TextureCacheRuntime>)\n'
+     '            Eden::Performance::CountTextureUpload(upload_start, image.gpu_addr, unsigned(image.info.format),\n'
+     '                unsigned(image.info.type), image.info.size.width, image.info.size.height, image.info.size.depth,\n'
+     '                image.info.resources.levels, image.info.resources.layers, image.guest_size_bytes,\n'
+     '                unsigned(image.flags));\n'
+     '    };\n\n    TrackImage(image, image_id);'),
     ('const s64 min_vacancy_expected = (6 * mem_threshold) / 10;',
      'const s64 min_vacancy_expected =\n            ((std::is_same_v<Runtime, Vulkan::TextureCacheRuntime> ? 4 : 6) * mem_threshold) / 10;'),
 ] + texture_costs)

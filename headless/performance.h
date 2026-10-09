@@ -10,6 +10,7 @@
 #include <mutex>
 #include <vector>
 #include <optional>
+#include <unordered_map>
 #include "common/cpu_features.h"
 
 namespace Eden::Performance {
@@ -43,10 +44,13 @@ inline std::atomic<bool> capture_early{false};
 // Development: keep Eden's default library applets, which start some from the firmware
 // (dev-settings applets=firmware). The port otherwise uses the built-in ones (main.cpp).
 inline std::atomic<bool> firmware_applets{false};
+#endif
 // Development: with every EDEN_SLOW_FRAME, how the GPU thread, the guest cores and the Vulkan
 // workers spent that interval (EDEN_SLOW_DETAIL), and the same per-frame average over each 5 s
-// report (EDEN_FRAME_AVG). dev-settings slow_detail=on; it also turns on the Vulkan cost timers.
+// report (EDEN_FRAME_AVG); each texture upload of 0.5 ms or more (EDEN_TEX_UPLOAD). dev-settings
+// slow_detail=on; it also turns on the Vulkan cost timers.
 inline std::atomic<bool> slow_detail{false};
+#ifdef EDEN_DEV_PROFILE
 // GPU thread only (OnFrameDisplayed): every presented frame, the interval since the previous one.
 void ReportFrame(double interval_ms, unsigned frame, bool slow, bool window_end);
 #endif
@@ -449,6 +453,28 @@ inline constexpr const char* vulkan_api_names[]{
     "shader_prepare", "pipeline_cache_save", "shader_pool_reset", "shader_cfg", "shader_ir",
     "shader_spirv", "shader_module", "texture_join", "texture_refresh"};
 inline std::array<Totals, std::size(vulkan_api_names)> vulkan_api;
+// Texture cache uploads of CPU-modified images (RefreshContents past its early returns): calls, GPU
+// thread time and guest bytes. With slow_detail, uploads of 0.5 ms or more are logged with the image,
+// and how many uploads that address has had (the texture cache lock is held).
+inline Totals texture_upload;
+inline void CountTextureUpload(long long start, unsigned long long gpu_addr, unsigned format, unsigned type,
+                               unsigned width, unsigned height, unsigned depth, unsigned levels, unsigned layers,
+                               unsigned long long guest_bytes, unsigned flags) {
+    const auto ns = static_cast<unsigned long long>((std::max)(NowNs() - start, 0LL));
+    texture_upload.calls.fetch_add(1, std::memory_order_relaxed);
+    texture_upload.nanoseconds.fetch_add(ns, std::memory_order_relaxed);
+    texture_upload.requested_bytes.fetch_add(guest_bytes, std::memory_order_relaxed);
+    if (!slow_detail.load(std::memory_order_relaxed)) return;
+    static std::unordered_map<unsigned long long, unsigned> uploads;
+    static unsigned lines = 0;
+    const unsigned count = ++uploads[gpu_addr];
+    if (ns >= 500'000 && lines < 5000) {
+        ++lines;
+        std::printf("EDEN_TEX_UPLOAD ms=%.2f addr=%llx format=%u type=%u size=%ux%ux%u levels=%u layers=%u "
+                    "bytes=%llu flags=%x count=%u\n", ns / 1e6, gpu_addr, format, type, width, height, depth,
+                    levels, layers, guest_bytes, flags, count);
+    }
+}
 // Development GPU execution time (gpu_time=on): command buffer spans summed as the worker collects them.
 inline std::atomic<unsigned long long> gpu_busy_ns{};
 inline std::optional<Timer> VulkanTimer(unsigned index) {

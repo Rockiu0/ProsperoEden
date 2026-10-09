@@ -1097,7 +1097,7 @@ struct FrameCounters {
     long long gpu_cpu = 0;
     unsigned long long gpu_wait = 0, dispatch = 0, draws = 0, hold = 0, present_wait = 0, drain = 0,
         queue_full = 0, gpu_busy = 0, cpu_write = 0, blocked = 0, deferred = 0, fs_ns = 0, fs_bytes = 0,
-        ipc = 0, sync = 0, dequeue = 0, download = 0;
+        ipc = 0, sync = 0, dequeue = 0, download = 0, upload_calls = 0, upload_ns = 0, upload_bytes = 0;
     std::array<unsigned long long, 3> compile_calls{}, compile_ns{}, idle_ns{};
     std::array<unsigned long long, std::size(vulkan_api_names)> vk_calls{}, vk_ns{};
 };
@@ -1122,6 +1122,9 @@ FrameCounters ReadFrameCounters() {
     now.sync = get(guest_sync_wait.nanoseconds);
     now.dequeue = get(guest_dequeue_wait.nanoseconds);
     now.download = get(guest_read_download.nanoseconds);
+    now.upload_calls = get(texture_upload.calls);
+    now.upload_ns = get(texture_upload.nanoseconds);
+    now.upload_bytes = get(texture_upload.requested_bytes);
     for (unsigned core = 0; core < 3; ++core) {
         now.compile_calls[core] = get(compilation[core].calls);
         now.compile_ns[core] = get(compilation[core].nanoseconds);
@@ -1155,11 +1158,12 @@ void PrintFrameCounters(const char* tag, unsigned frame, double ms, unsigned fra
                       b.compile_calls[0] + b.compile_calls[1] + b.compile_calls[2]),
                 ms_of(a.idle_ns[0], b.idle_ns[0]), ms_of(a.idle_ns[1], b.idle_ns[1]), ms_of(a.idle_ns[2], b.idle_ns[2]));
     std::printf(" cpu_write=%.1f blocked=%.0f deferred=%.0f fs=%.1f fs_kb=%.0f ipc=%.1f sync=%.1f dequeue=%.1f "
-                "download=%.1f queue_full=%.1f",
+                "download=%.1f queue_full=%.1f tex_up=%.1f/%.0f/%.1f",
                 ms_of(a.cpu_write, b.cpu_write), count(a.blocked, b.blocked), count(a.deferred, b.deferred),
                 ms_of(a.fs_ns, b.fs_ns), count(a.fs_bytes, b.fs_bytes) / 1024.0, ms_of(a.ipc, b.ipc),
                 ms_of(a.sync, b.sync), ms_of(a.dequeue, b.dequeue), ms_of(a.download, b.download),
-                ms_of(a.queue_full, b.queue_full));
+                ms_of(a.queue_full, b.queue_full), count(a.upload_calls, b.upload_calls),
+                count(a.upload_bytes, b.upload_bytes) / 1024.0, ms_of(a.upload_ns, b.upload_ns));
     // Vulkan cost timers that ran in the interval: calls/ms (they overlap and run on several threads).
     for (unsigned i = 0; i < vulkan_api.size(); ++i)
         if (b.vk_calls[i] != a.vk_calls[i])
