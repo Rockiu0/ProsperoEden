@@ -713,7 +713,7 @@ int main(int argc, char** argv) {
         Settings::values.memory_layout_mode = Settings::MemoryLayout::Memory_4Gb;
         // A development run that names jit_list in dev-settings decides the block list by itself.
         [[maybe_unused]] bool dev_block_list = false;  // read where a session applies its settings
-        [[maybe_unused]] bool dev_vertex_input_off = false;  // likewise
+        [[maybe_unused]] int dev_vertex_input = -1;  // likewise: dev-settings vertex_input_dynamic=off/on
         [[maybe_unused]] bool dev_console_mode_handheld = false;
 #ifdef EDEN_DEV_PROFILE
         // One-run A/B switches written by the development runner; absent = defaults.
@@ -868,8 +868,8 @@ int main(int argc, char** argv) {
                     Eden::DevVulkan::disable_descriptor_buffer = true;
                 } else if (entry == "robustness2=on") {
                     Eden::DevVulkan::robustness2 = true;
-                } else if (entry == "vertex_input_dynamic=off") {
-                    dev_vertex_input_off = true;
+                } else if (entry == "vertex_input_dynamic=off" || entry == "vertex_input_dynamic=on") {
+                    dev_vertex_input = entry.ends_with("on") ? 1 : 0;
                 } else if (entry == "pipeline_trace=on") {
                     Eden::DevVulkan::trace_pipelines = true;
                 } else if (entry.starts_with("radv_debug=")) {
@@ -963,7 +963,7 @@ int main(int argc, char** argv) {
                         unsigned(!Eden::DevVulkan::disable_null_descriptor),
                         unsigned(!Eden::DevVulkan::disable_descriptor_buffer),
                         unsigned(Eden::DevVulkan::robustness2),
-                        unsigned(!dev_vertex_input_off),
+                        unsigned(dev_vertex_input),
                         unsigned(Settings::values.dyna_state.GetValue()),
                         unsigned(!Eden::DevVulkan::disable_sparse),
                         unsigned(!Eden::DevVulkan::disable_multi_range),
@@ -1042,7 +1042,8 @@ int main(int argc, char** argv) {
             // input dynamic state, on other platforms too; it is correct with it off. Set for every
             // session: the value outlives one.
             Settings::values.vertex_input_dynamic_state.SetValue(
-                !dev_vertex_input_off && eden_game_title_id(guest) != 0x0100F43008C44000ULL);
+                dev_vertex_input >= 0 ? dev_vertex_input == 1
+                                      : eden_game_title_id(guest) != 0x0100F43008C44000ULL);
             // The report reads the values back: what the emulator has, whoever set it.
             const auto on = [](bool value) { return value ? "on" : "off"; };
             Eden::Report("launch", (std::string("Performance: block list ") + on(Eden::JitList::enabled) +

@@ -366,6 +366,13 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {'''),
         auto area = texture_cache.GetFlushArea(addr, size);'''),
     ('        if (hold_start != 0) ::Eden::Performance::AddSince(::Eden::Performance::draw_cache_hold, hold_start);\n',
      '        if (hold_start != 0) ::Eden::Performance::AddHold(hold_start);\n'),
+    # Dynamic vertex input: a stream with instancing on and frequency 0 advances per vertex, as the
+    # pipeline's static vertex input (binding_divisors) and OpenGL's divisor 0 take it. Here it was
+    # an instance-rate binding with divisor 0, every vertex reading element 0: geometry collapsed
+    # (objects vanishing for a frame, a whole scene drawn as one flat colour).
+    ('        const bool is_instanced{regs.vertex_stream_instances.IsInstancingEnabled(binding)};\n',
+     '        const bool is_instanced{regs.vertex_stream_instances.IsInstancingEnabled(binding) &&\n'
+     '                                input_binding.frequency != 0};\n'),
 ])
 # Host conditional rendering (VK_EXT_conditional_rendering, dev_vulkan.h hcr_mode): count each
 # decision (EDEN_DEV_GUEST cond= slots 13-19); hcr=exact sends the conditions Eden would draw
