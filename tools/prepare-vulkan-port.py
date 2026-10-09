@@ -911,15 +911,58 @@ for signature, index in (
     }
 '''
     texture_costs.append((anchor, anchor + scope))
+# Large textures re-upload only the block rows guest writes changed (headless/texture_partial.h).
+VULKAN_CACHE = 'if constexpr (std::is_same_v<Runtime, Vulkan::TextureCacheRuntime>) {'
+texture_partial = [
+    ('    ForEachImageInRegion(cpu_addr, size, [this](ImageId image_id, Image& image) {\n'
+     '        if (True(image.flags & ImageFlagBits::CpuModified)) {\n'
+     '            return;\n'
+     '        }\n'
+     '        image.flags |= ImageFlagBits::CpuModified;',
+     '    ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size](ImageId image_id, Image& image) {\n'
+     '        ' + VULKAN_CACHE + '\n'
+     '            if (Eden::TexturePartial::Write(device_memory, image, image_id.index, cpu_addr, size)) {\n'
+     '                return;\n'
+     '            }\n'
+     '        }\n'
+     '        if (True(image.flags & ImageFlagBits::CpuModified)) {\n'
+     '            return;\n'
+     '        }\n'
+     '        image.flags |= ImageFlagBits::CpuModified;'),
+    ('    ASSERT(True(image.flags & ImageFlagBits::Tracked));\n'
+     '    image.flags &= ~ImageFlagBits::Tracked;',
+     '    ASSERT(True(image.flags & ImageFlagBits::Tracked));\n'
+     '    ' + VULKAN_CACHE + '\n'
+     '        Eden::TexturePartial::End(device_memory, image_id.index);\n'
+     '    }\n'
+     '    image.flags &= ~ImageFlagBits::Tracked;'),
+    ('    if (invalidate) {\n'
+     '        image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);',
+     '    if (invalidate) {\n'
+     '        ' + VULKAN_CACHE + '\n'
+     '            Eden::TexturePartial::End(device_memory, image_id.index);\n'
+     '        }\n'
+     '        image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);'),
+    ('    ASSERT_MSG(False(image.flags & ImageFlagBits::Tracked), "Image was not untracked");',
+     '    ASSERT_MSG(False(image.flags & ImageFlagBits::Tracked), "Image was not untracked");\n'
+     '    ' + VULKAN_CACHE + '\n'
+     '        Eden::TexturePartial::images.erase(image_id.index);\n'
+     '    }'),
+    ('    if (False(image.flags & ImageFlagBits::CpuModified)) {\n'
+     '        // Only upload modified images\n'
+     '        return;\n'
+     '    }\n',
+     '    if (False(image.flags & ImageFlagBits::CpuModified)) {\n'
+     '        // Only upload modified images\n'
+     '        return;\n'
+     '    }\n'
+     '    ' + VULKAN_CACHE + '\n' + (port / 'texture_partial_refresh.inc').read_text() + '    }\n'),
+]
 adapt('src/video_core/texture_cache/texture_cache.h',
       'vulkan-cache/video_core/texture_cache/texture_cache.h', [
-    ('namespace VideoCommon {', '#include "performance.h"\n#include "common/scope_exit.h"\nnamespace Vulkan { class TextureCacheRuntime; }\n\nnamespace VideoCommon {'),
+    ('namespace VideoCommon {', '#include "performance.h"\n#include "texture_partial.h"\n#include "common/scope_exit.h"\nnamespace Vulkan { class TextureCacheRuntime; }\n\nnamespace VideoCommon {'),
     (download_prefix, download_prefix + (port / 'vulkan_download_batch.inc').read_text() + '\n'),
     (gc_original, gc),
-    # RADV reports all Vulkan allocations, not just cached textures. A game's
-    # measured ~1.9 GiB working set triggered dirty eviction at the old 1.6 GiB
-    # threshold despite a 4 GiB budget. Retain 40% headroom; keep the original
-    # critical threshold and minimum 1 GiB spacing. OpenGL remains unchanged.
     # Development: each upload's image and time (performance.h CountTextureUpload).
     ('    image.flags &= ~ImageFlagBits::CpuModified;\n\n    TrackImage(image, image_id);',
      '    image.flags &= ~ImageFlagBits::CpuModified;\n'
@@ -931,9 +974,18 @@ adapt('src/video_core/texture_cache/texture_cache.h',
      '                image.info.resources.levels, image.info.resources.layers, image.guest_size_bytes,\n'
      '                unsigned(image.flags));\n'
      '    };\n\n    TrackImage(image, image_id);'),
+    # RADV reports all Vulkan allocations, not just cached textures. A game's
+    # measured ~1.9 GiB working set triggered dirty eviction at the old 1.6 GiB
+    # threshold despite a 4 GiB budget. Retain 40% headroom; keep the original
+    # critical threshold and minimum 1 GiB spacing. OpenGL remains unchanged.
     ('const s64 min_vacancy_expected = (6 * mem_threshold) / 10;',
      'const s64 min_vacancy_expected =\n            ((std::is_same_v<Runtime, Vulkan::TextureCacheRuntime> ? 4 : 6) * mem_threshold) / 10;'),
-] + texture_costs)
+] + texture_partial + texture_costs)
+
+adapt('src/video_core/texture_cache/util.cpp', 'texture_util.cpp', [
+    ('#include <vector>', '#include <cstring>\n#include <vector>\n#include "texture_partial.h"'),
+    ('} // namespace VideoCommon', (port / 'texture_rows.inc').read_text() + '\n} // namespace VideoCommon'),
+])
 
 # These costs sit outside vkCreateGraphicsPipelines: guest shader translation,
 # worker readiness, and background serialization can block different threads.

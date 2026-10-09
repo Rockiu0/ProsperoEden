@@ -453,6 +453,13 @@ inline constexpr const char* vulkan_api_names[]{
     "shader_prepare", "pipeline_cache_save", "shader_pool_reset", "shader_cfg", "shader_ir",
     "shader_spirv", "shader_module", "texture_join", "texture_refresh"};
 inline std::array<Totals, std::size(vulkan_api_names)> vulkan_api;
+// Large textures upload only the block rows guest writes changed (texture_partial.h): dev-settings
+// tex_partial=off, tex_partial_kb=N (smallest image, default 1 MiB), tex_partial_check=on (compare
+// each partial upload with a whole unswizzle). Counted: partial uploads, their bytes, checks, mismatches.
+inline std::atomic<bool> tex_partial{true}, tex_partial_check{false};
+inline std::atomic<unsigned long long> tex_partial_min{1ULL << 20};
+inline std::atomic<unsigned long long> tex_partial_uploads{}, tex_partial_bytes{}, tex_partial_checks{},
+    tex_partial_mismatches{};
 // Texture cache uploads of CPU-modified images (RefreshContents past its early returns): calls, GPU
 // thread time and guest bytes. With slow_detail, uploads of 0.5 ms or more are logged with the image,
 // and how many uploads that address has had (the texture cache lock is held).

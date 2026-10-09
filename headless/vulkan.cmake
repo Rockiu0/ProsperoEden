@@ -10,9 +10,11 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${EDEN_PORT_DIR}/vulkan_loading.inc")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${EDEN_PORT_DIR}/vulkan_download_batch.inc"
-    "${EDEN_PORT_DIR}/vulkan_gc_downloads.inc")
-list(REMOVE_ITEM video_sources vulkan_common/vulkan_device.cpp renderer_vulkan/vk_scheduler.cpp)
-list(APPEND video_sources "${PORT_BUILD_DIR}/vulkan_device.cpp" "${PORT_BUILD_DIR}/vulkan_scheduler.cpp")
+    "${EDEN_PORT_DIR}/vulkan_gc_downloads.inc"
+    "${EDEN_PORT_DIR}/texture_rows.inc" "${EDEN_PORT_DIR}/texture_partial_refresh.inc")
+list(REMOVE_ITEM video_sources vulkan_common/vulkan_device.cpp renderer_vulkan/vk_scheduler.cpp texture_cache/util.cpp)
+list(APPEND video_sources "${PORT_BUILD_DIR}/vulkan_device.cpp" "${PORT_BUILD_DIR}/vulkan_scheduler.cpp"
+    "${PORT_BUILD_DIR}/texture_util.cpp")
 list(REMOVE_ITEM video_sources vulkan_common/vulkan_instance.cpp vulkan_common/vulkan_wrapper.cpp
     vulkan_common/vulkan_library.cpp vulkan_common/vulkan_surface.cpp
     renderer_vulkan/vk_rasterizer.cpp renderer_vulkan/vk_blit_screen.cpp

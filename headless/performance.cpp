@@ -572,6 +572,10 @@ void ReportGpuThread(unsigned frame) {
     std::printf(" write_deferred=%llu dirty_replays=%llu read_skipped=%llu",
                 cpu_write_deferred.load(std::memory_order_relaxed), gpu_dirty_replays.load(std::memory_order_relaxed),
                 cpu_read_skipped.load(std::memory_order_relaxed));
+    std::printf(" tex_partial=%llu tex_partial_bytes=%llu tex_partial_checks=%llu tex_partial_mismatches=%llu",
+                tex_partial_uploads.load(std::memory_order_relaxed), tex_partial_bytes.load(std::memory_order_relaxed),
+                tex_partial_checks.load(std::memory_order_relaxed),
+                tex_partial_mismatches.load(std::memory_order_relaxed));
     std::printf(" cache_lock_contended=%llu cache_lock_blocked=%llu",
                 cache_lock_contended.load(std::memory_order_relaxed), cache_lock_blocked.load(std::memory_order_relaxed));
     std::printf(" fs_file_calls=%llu fs_file_ns=%llu fs_file_bytes=%llu fs_storage_calls=%llu fs_storage_ns=%llu "

@@ -765,6 +765,13 @@ int main(int argc, char** argv) {
                     // One engine call per GPU command word, as upstream (performance.h dma_batch).
                     Eden::Performance::dma_batch = false;
                     std::printf("EDEN_DEV_DMA_BATCH 0\n");
+                } else if (entry == "tex_partial=off") {
+                    // Whole-image uploads after every guest write, as upstream (texture_partial.h).
+                    Eden::Performance::tex_partial = false;
+                } else if (entry == "tex_partial_check=on") {
+                    Eden::Performance::tex_partial_check = true;
+                } else if (entry.starts_with("tex_partial_kb=")) {
+                    Eden::Performance::tex_partial_min = std::strtoull(entry.c_str() + 15, nullptr, 10) << 10;
                 } else if (entry == "slow_detail=on") {
                     // Each slow frame broken down (EDEN_SLOW_DETAIL), with the Vulkan cost timers.
                     Eden::Performance::slow_detail = true;
