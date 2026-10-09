@@ -693,6 +693,7 @@ void GpuTimeCollect(const Device& device) {
         const u64 ns = stamps[1] > stamps[0]
                            ? static_cast<u64>(double(stamps[1] - stamps[0]) * gpu_time.period_ns) : 0;
         gpu_time.busy_ns += ns;
+        ::Eden::Performance::gpu_busy_ns.fetch_add(ns, std::memory_order_relaxed);
         gpu_time.max_ns = (std::max)(gpu_time.max_ns, ns);
         ++gpu_time.submissions;
         ++gpu_time.first_pending;
@@ -710,7 +711,7 @@ void GpuTimeCollect(const Device& device) {
 } // namespace
 '''
 adapt('src/video_core/renderer_vulkan/vk_scheduler.cpp', 'vulkan_scheduler.cpp', [
-    ('#include <memory>', '#include <memory>\n#include <array>\n#include <chrono>\n#include <cstdio>\n#include "dev_vulkan.h"'),
+    ('#include <memory>', '#include <memory>\n#include <array>\n#include <chrono>\n#include <cstdio>\n#include "dev_vulkan.h"\n#include "performance.h"'),
     ('namespace Vulkan {\n', 'namespace Vulkan {\n' + GPU_TIME_HELPERS),
     ('        .pInheritanceInfo = nullptr,\n    });\n    current_upload_cmdbuf = vk::CommandBuffer(command_pool->Commit(), device.GetDispatchLoader());',
      '        .pInheritanceInfo = nullptr,\n    });\n    GpuTimeBegin(device, current_cmdbuf);\n'
@@ -881,11 +882,13 @@ for old, new in [
         raise RuntimeError(f'Pinned GC anchor changed: {old}')
     gc = gc.replace(old, new)
 texture_costs = []
+# [24] new images (creation and first upload), [25] uploads of CPU-modified images.
 for signature, index in (
     ('RunGarbageCollector()', 13), ('DownloadMemory(DAddr cpu_addr, size_t size)', 14),
-    ('PopAsyncFlushes()', 15),
+    ('PopAsyncFlushes()', 15), ('ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr)', 24),
+    ('RefreshContents(Image& image, ImageId image_id)', 25),
 ):
-    anchor = f'void TextureCache<P>::{signature} {{'
+    anchor = f'{signature} {{' if ' ' in signature.split('(')[0] else f'void TextureCache<P>::{signature} {{'
     scope = f'''
     std::optional<Eden::Performance::Timer> cost_timer;
     if constexpr (std::is_same_v<Runtime, Vulkan::TextureCacheRuntime>) {{

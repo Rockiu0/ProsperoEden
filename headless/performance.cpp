@@ -1090,6 +1090,107 @@ void PlatformChecks() {
     }
     std::fflush(stdout);
 }
+#ifdef EDEN_DEV_PROFILE
+namespace {
+// Cumulative counters read once per presented frame (ReportFrame, GPU thread).
+struct FrameCounters {
+    long long gpu_cpu = 0;
+    unsigned long long gpu_wait = 0, dispatch = 0, draws = 0, hold = 0, present_wait = 0, drain = 0,
+        queue_full = 0, gpu_busy = 0, cpu_write = 0, blocked = 0, deferred = 0, fs_ns = 0, fs_bytes = 0,
+        ipc = 0, sync = 0, dequeue = 0, download = 0;
+    std::array<unsigned long long, 3> compile_calls{}, compile_ns{}, idle_ns{};
+    std::array<unsigned long long, std::size(vulkan_api_names)> vk_calls{}, vk_ns{};
+};
+FrameCounters ReadFrameCounters() {
+    const auto get = [](const std::atomic<unsigned long long>& value) { return value.load(std::memory_order_relaxed); };
+    FrameCounters now;
+    now.gpu_cpu = owner_cpu_clock_valid ? ClockNs(CLOCK_THREAD_CPUTIME_ID) : 0;
+    now.gpu_wait = get(gpu_queue_wait.nanoseconds);
+    now.dispatch = get(gpu_dispatch.nanoseconds);
+    now.draws = get(rasterizer_draw.calls);
+    now.hold = get(draw_cache_hold.nanoseconds);
+    now.present_wait = get(gpu_present_wait.nanoseconds);
+    now.drain = get(gpu_fence_drain.nanoseconds);
+    now.queue_full = get(gpu_queue_full.nanoseconds);
+    now.gpu_busy = get(gpu_busy_ns);
+    now.cpu_write = get(guest_cpu_write.nanoseconds);
+    now.blocked = get(cache_lock_blocked);
+    now.deferred = get(cpu_write_deferred);
+    now.fs_ns = get(guest_fs_storage.nanoseconds) + get(guest_fs_file.nanoseconds);
+    now.fs_bytes = get(guest_fs_storage_bytes) + get(guest_fs_file_bytes);
+    now.ipc = get(guest_ipc_wait.nanoseconds);
+    now.sync = get(guest_sync_wait.nanoseconds);
+    now.dequeue = get(guest_dequeue_wait.nanoseconds);
+    now.download = get(guest_read_download.nanoseconds);
+    for (unsigned core = 0; core < 3; ++core) {
+        now.compile_calls[core] = get(compilation[core].calls);
+        now.compile_ns[core] = get(compilation[core].nanoseconds);
+        now.idle_ns[core] = get(guest_idle[core].nanoseconds);
+    }
+    for (unsigned i = 0; i < vulkan_api.size(); ++i) {
+        now.vk_calls[i] = get(vulkan_api[i].calls);
+        now.vk_ns[i] = get(vulkan_api[i].nanoseconds);
+    }
+    return now;
+}
+// One line of the interval between two snapshots, in milliseconds per frame over `frames` frames.
+void PrintFrameCounters(const char* tag, unsigned frame, double ms, unsigned frames, const FrameCounters& a,
+                        const FrameCounters& b) {
+    const double per = frames ? 1.0 / frames : 1.0;
+    const auto ms_of = [per](unsigned long long from, unsigned long long to) {
+        return to >= from ? (to - from) * per / 1e6 : 0.0;
+    };
+    const auto count = [per](unsigned long long from, unsigned long long to) {
+        return to >= from ? (to - from) * per : 0.0;
+    };
+    std::printf("%s frame=%u frames=%u ms=%.1f gpu_cpu=%.1f gpu_wait=%.1f dispatch=%.1f draws=%.0f hold=%.1f "
+                "present_wait=%.1f drain=%.1f gpu_hw=%.1f", tag, frame, frames, ms,
+                b.gpu_cpu >= a.gpu_cpu ? (b.gpu_cpu - a.gpu_cpu) * per / 1e6 : 0.0, ms_of(a.gpu_wait, b.gpu_wait),
+                ms_of(a.dispatch, b.dispatch), count(a.draws, b.draws), ms_of(a.hold, b.hold),
+                ms_of(a.present_wait, b.present_wait), ms_of(a.drain, b.drain), ms_of(a.gpu_busy, b.gpu_busy));
+    std::printf(" compile=%.1f/%.1f/%.1f blocks=%.0f idle=%.1f/%.1f/%.1f",
+                ms_of(a.compile_ns[0], b.compile_ns[0]), ms_of(a.compile_ns[1], b.compile_ns[1]),
+                ms_of(a.compile_ns[2], b.compile_ns[2]),
+                count(a.compile_calls[0] + a.compile_calls[1] + a.compile_calls[2],
+                      b.compile_calls[0] + b.compile_calls[1] + b.compile_calls[2]),
+                ms_of(a.idle_ns[0], b.idle_ns[0]), ms_of(a.idle_ns[1], b.idle_ns[1]), ms_of(a.idle_ns[2], b.idle_ns[2]));
+    std::printf(" cpu_write=%.1f blocked=%.0f deferred=%.0f fs=%.1f fs_kb=%.0f ipc=%.1f sync=%.1f dequeue=%.1f "
+                "download=%.1f queue_full=%.1f",
+                ms_of(a.cpu_write, b.cpu_write), count(a.blocked, b.blocked), count(a.deferred, b.deferred),
+                ms_of(a.fs_ns, b.fs_ns), count(a.fs_bytes, b.fs_bytes) / 1024.0, ms_of(a.ipc, b.ipc),
+                ms_of(a.sync, b.sync), ms_of(a.dequeue, b.dequeue), ms_of(a.download, b.download),
+                ms_of(a.queue_full, b.queue_full));
+    // Vulkan cost timers that ran in the interval: calls/ms (they overlap and run on several threads).
+    for (unsigned i = 0; i < vulkan_api.size(); ++i)
+        if (b.vk_calls[i] != a.vk_calls[i])
+            std::printf(" %s=%.1f/%.2f", vulkan_api_names[i], count(a.vk_calls[i], b.vk_calls[i]),
+                        ms_of(a.vk_ns[i], b.vk_ns[i]));
+    std::printf("\n");
+}
+} // namespace
+
+void ReportFrame(double interval_ms, unsigned frame, bool slow, bool window_end) {
+    if (!slow_detail.load(std::memory_order_relaxed)) return;
+    static FrameCounters previous = ReadFrameCounters(), window = previous;
+    static unsigned window_frames = 0;
+    static double window_ms = 0;
+    static unsigned lines = 0;
+    const FrameCounters now = ReadFrameCounters();
+    ++window_frames;
+    window_ms += interval_ms;
+    if (slow && lines < 20000) {
+        ++lines;
+        PrintFrameCounters("EDEN_SLOW_DETAIL", frame, interval_ms, 1, previous, now);
+    }
+    if (window_end) {
+        PrintFrameCounters("EDEN_FRAME_AVG", frame, window_ms / window_frames, window_frames, window, now);
+        window = now;
+        window_frames = 0;
+        window_ms = 0;
+    }
+    previous = now;
+}
+#endif
 } // namespace Eden::Performance
 
 // dynarmic A64 hooks (weak there): whole-cache evacuations and block compilation time.

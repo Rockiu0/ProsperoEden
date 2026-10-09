@@ -765,6 +765,10 @@ int main(int argc, char** argv) {
                     // One engine call per GPU command word, as upstream (performance.h dma_batch).
                     Eden::Performance::dma_batch = false;
                     std::printf("EDEN_DEV_DMA_BATCH 0\n");
+                } else if (entry == "slow_detail=on") {
+                    // Each slow frame broken down (EDEN_SLOW_DETAIL), with the Vulkan cost timers.
+                    Eden::Performance::slow_detail = true;
+                    Eden::Performance::vulkan_cost_enabled = true;
                 } else if (entry.starts_with("slow_frame_ms=")) {
                     // Frames slower than this are logged one by one (EDEN_SLOW_FRAME; 0 = off).
                     Eden::Performance::slow_frame_ms = static_cast<unsigned>(std::min(1000UL, std::strtoul(entry.c_str() + 14, nullptr, 10)));

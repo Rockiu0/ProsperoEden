@@ -43,6 +43,12 @@ inline std::atomic<bool> capture_early{false};
 // Development: keep Eden's default library applets, which start some from the firmware
 // (dev-settings applets=firmware). The port otherwise uses the built-in ones (main.cpp).
 inline std::atomic<bool> firmware_applets{false};
+// Development: with every EDEN_SLOW_FRAME, how the GPU thread, the guest cores and the Vulkan
+// workers spent that interval (EDEN_SLOW_DETAIL), and the same per-frame average over each 5 s
+// report (EDEN_FRAME_AVG). dev-settings slow_detail=on; it also turns on the Vulkan cost timers.
+inline std::atomic<bool> slow_detail{false};
+// GPU thread only (OnFrameDisplayed): every presented frame, the interval since the previous one.
+void ReportFrame(double interval_ms, unsigned frame, bool slow, bool window_end);
 #endif
 // One writer per guest core. JIT state is read only by its owning worker after Run.
 enum class CpuPhase : unsigned { Kernel, Guest, Idle };
@@ -436,7 +442,15 @@ private:
 
 // Opt-in API wall times: calls may overlap across threads, so do not sum them as frame time.
 inline std::atomic<bool> vulkan_cost_enabled{false};
-inline std::array<Totals, 24> vulkan_api;
+inline constexpr const char* vulkan_api_names[]{
+    "graphics_pipeline", "compute_pipeline", "submit", "fence_wait", "semaphore_wait", "device_idle",
+    "guest_fence", "buffer_sync", "texture_sync", "present_sync", "descriptor_sync", "range_reuse",
+    "astc_submit", "texture_gc", "texture_cpu_download", "texture_async_release", "pipeline_ready_wait",
+    "shader_prepare", "pipeline_cache_save", "shader_pool_reset", "shader_cfg", "shader_ir",
+    "shader_spirv", "shader_module", "texture_join", "texture_refresh"};
+inline std::array<Totals, std::size(vulkan_api_names)> vulkan_api;
+// Development GPU execution time (gpu_time=on): command buffer spans summed as the worker collects them.
+inline std::atomic<unsigned long long> gpu_busy_ns{};
 inline std::optional<Timer> VulkanTimer(unsigned index) {
     if (vulkan_cost_enabled.load(std::memory_order_relaxed))
         return std::optional<Timer>{std::in_place, vulkan_api.at(index)};
@@ -444,17 +458,8 @@ inline std::optional<Timer> VulkanTimer(unsigned index) {
 }
 inline void ReportVulkan() {
     if (!vulkan_cost_enabled.load(std::memory_order_relaxed)) return;
-    constexpr const char* names[]{"graphics_pipeline", "compute_pipeline", "submit",
-                                  "fence_wait", "semaphore_wait", "device_idle",
-                                  "guest_fence", "buffer_sync", "texture_sync", "present_sync",
-                                  "descriptor_sync", "range_reuse", "astc_submit",
-                                  "texture_gc", "texture_cpu_download", "texture_async_release",
-                                  "pipeline_ready_wait", "shader_prepare", "pipeline_cache_save",
-                                  "shader_pool_reset", "shader_cfg", "shader_ir",
-                                  "shader_spirv", "shader_module"};
-    static_assert(std::size(names) == vulkan_api.size());
     for (unsigned i = 0; i < vulkan_api.size(); ++i)
-        std::printf("EDEN_VULKAN_COST api=%s calls=%llu ns=%llu\n", names[i],
+        std::printf("EDEN_VULKAN_COST api=%s calls=%llu ns=%llu\n", vulkan_api_names[i],
                     vulkan_api[i].calls.load(std::memory_order_relaxed),
                     vulkan_api[i].nanoseconds.load(std::memory_order_relaxed));
 }

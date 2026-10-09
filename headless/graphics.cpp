@@ -638,10 +638,12 @@ void GraphicsWindow::OnFrameDisplayed() {
             // frames that came within one refresh of a 120 Hz output.
             static std::array<unsigned, 5> interval_hist{};
             const double interval_ms = (now - frame_sample_last) * 1000.0;
+            bool frame_slow = false;
             ++interval_hist[interval_ms < 12.5 ? 4 : interval_ms < 20.0 ? 0 : interval_ms < 36.0 ? 1 :
                             interval_ms < 52.0 ? 2 : 3];
             if (const unsigned slow_ms = Eden::Performance::slow_frame_ms.load(std::memory_order_relaxed);
                 slow_ms != 0 && interval_ms >= slow_ms) {
+                frame_slow = true;
                 static unsigned slow_lines = 0;
                 if (slow_lines < 20000) {
                     ++slow_lines;
@@ -652,6 +654,7 @@ void GraphicsWindow::OnFrameDisplayed() {
                                 interval_ms, frame_total);
                 }
             }
+            Eden::Performance::ReportFrame(interval_ms, frame_total, frame_slow, now - frame_sample_start >= 5.0);
 #endif
             frame_sample_last = now;
             if (now - frame_sample_start >= 5.0) {
