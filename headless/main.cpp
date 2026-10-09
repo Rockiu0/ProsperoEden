@@ -796,6 +796,8 @@ int main(int argc, char** argv) {
                 } else if (entry.starts_with("pc_core=") && entry.size() == 9 && entry[8] >= '0' && entry[8] <= '3') {
                     // Host PC samples from this guest core instead of core 0 (with --pc-sample).
                     Eden::Performance::pc_sample_core = static_cast<unsigned>(entry[8] - '0');
+                } else if (entry == "gpu_pc_fast=on") {
+                    Eden::Performance::gpu_pc_fast = true;
                 } else if (entry == "pc_fast=on") {
                     Eden::Performance::pc_fast = true;
                 } else if (entry == "capture=early") {

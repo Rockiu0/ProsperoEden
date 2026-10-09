@@ -73,6 +73,16 @@ pthread_t core_sample_thread{};
 std::atomic<bool> core_sample_ready{};
 unsigned pc_reported{};
 bool pc_sampling{};
+// gpu_pc_fast: a ring of GPU-thread samples, written by the GPU thread's signal handler and read by
+// the same thread's 5 s report. Each holds the PC and up to 47 code addresses from its stack.
+constexpr unsigned GPU_FAST_SAMPLES = 8192, GPU_FAST_WORDS = 48;
+std::array<std::array<uintptr_t, GPU_FAST_WORDS>, GPU_FAST_SAMPLES> gpu_fast_samples{};
+std::atomic<unsigned long long> gpu_fast_count{};
+unsigned long long gpu_fast_reported{};
+std::atomic<uintptr_t> gpu_stack_top{};
+std::atomic<bool> gpu_fast_active{};
+std::mutex gpu_fast_mutex;
+unsigned gpu_fast_generation{}, gpu_fast_alive{};
 #if defined(EDEN_DEV_WAIT_CALLERS) && defined(PS5_NATIVE)
 // Same firmware6.02 register offsets qualified by the C46 caller sampler.
 constexpr size_t runtime_rsp_offset = 248, runtime_rbp_offset = 136;
@@ -143,6 +153,25 @@ void PcSignal(int, siginfo_t*, void* context) {
             }
             core_pc_count.store(core_index + 1, std::memory_order_release);
         }
+        return;
+    }
+    if (gpu_fast_active.load(std::memory_order_acquire)) {
+        const auto* words = static_cast<const uintptr_t*>(context);
+        const unsigned long long count = gpu_fast_count.load(std::memory_order_relaxed);
+        auto& sample = gpu_fast_samples[count % GPU_FAST_SAMPLES];
+        sample = {};
+        sample[0] = words[224 / sizeof(uintptr_t)];
+        // Firmware 6.02 mcontext: rsp at byte 248. Code addresses (the executable's text, 0x400000 up)
+        // in the 4 KiB above it, bounded by the thread's first frame: its return addresses.
+        const uintptr_t rsp = words[248 / sizeof(uintptr_t)];
+        const uintptr_t top = gpu_stack_top.load(std::memory_order_relaxed);
+        unsigned found = 1;
+        for (uintptr_t at = rsp; at + sizeof(uintptr_t) <= top && at < rsp + 4096 && found < GPU_FAST_WORDS;
+             at += sizeof(uintptr_t)) {
+            const uintptr_t value = *reinterpret_cast<const uintptr_t*>(at);
+            if (value >= 0x400000 && value < 0x2c00000) sample[found++] = value;
+        }
+        gpu_fast_count.store(count + 1, std::memory_order_release);
         return;
     }
     const unsigned index = pc_count.load(std::memory_order_relaxed);
@@ -651,6 +680,41 @@ void RegisterWorker(const char* name) {
         Worker worker;
         worker.thread = pthread_self();
 #ifdef EDEN_DEV_PROFILE
+        if (pc_sampling && i == 4 && gpu_pc_fast.load()) {
+            // The GPU thread's first frame bounds the stack scan; ~250 Hz once it has run 30 s.
+            char marker;
+            gpu_stack_top.store(reinterpret_cast<uintptr_t>(&marker) & ~uintptr_t(7));
+            // The sampler signals this thread only while it lives: a thread_local guard ends the
+            // sampling under the same mutex when the thread exits (a return to the menu ends it).
+            struct Alive {
+                unsigned generation;
+                ~Alive() {
+                    std::lock_guard alive_lock(gpu_fast_mutex);
+                    gpu_fast_alive = 0;
+                    gpu_fast_active.store(false, std::memory_order_release);
+                }
+            };
+            unsigned generation;
+            {
+                std::lock_guard alive_lock(gpu_fast_mutex);
+                generation = ++gpu_fast_generation;
+                gpu_fast_alive = generation;
+            }
+            thread_local Alive alive{generation};
+            const pthread_t gpu_thread = pthread_self();
+            std::thread([gpu_thread, generation] {
+                std::this_thread::sleep_for(std::chrono::seconds(30));
+                for (bool first = true;; first = false) {
+                    {
+                        std::lock_guard alive_lock(gpu_fast_mutex);
+                        if (gpu_fast_alive != generation) return;
+                        if (first) gpu_fast_active.store(true, std::memory_order_release);
+                        if (pthread_kill(gpu_thread, SIGUSR2) != 0) return;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                }
+            }).detach();
+        }
         if (pc_sampling && (i == 4 || i == pc_sample_core.load())) {
             sigset_t mask;
             sigemptyset(&mask);
@@ -733,6 +797,28 @@ void Snapshot() {
 #if defined(EDEN_DEV_WAIT_CALLERS) && defined(PS5_NATIVE)
     std::map<std::array<uintptr_t, 9>, unsigned> caller_counts;
 #endif
+    if (gpu_fast_active.load(std::memory_order_acquire)) {
+        // The ring since the last report (older samples were overwritten if it fell behind).
+        const unsigned long long fast_end = gpu_fast_count.load(std::memory_order_acquire);
+        if (fast_end - gpu_fast_reported > GPU_FAST_SAMPLES) gpu_fast_reported = fast_end - GPU_FAST_SAMPLES;
+        std::map<uintptr_t, unsigned> leaf, stack;
+        std::vector<uintptr_t> seen;
+        const unsigned long long samples = fast_end - gpu_fast_reported;
+        for (; gpu_fast_reported < fast_end; ++gpu_fast_reported) {
+            const auto& sample = gpu_fast_samples[gpu_fast_reported % GPU_FAST_SAMPLES];
+            ++leaf[sample[0]];
+            seen.assign(sample.begin() + 1, sample.end());
+            std::sort(seen.begin(), seen.end());
+            seen.erase(std::unique(seen.begin(), seen.end()), seen.end());
+            for (const uintptr_t address : seen)
+                if (address) ++stack[address];
+        }
+        std::printf("EDEN_GPU_SAMPLES mono_ns=%lld samples=%llu\n", mono, samples);
+        for (const auto& [pc, count] : leaf)
+            std::printf("EDEN_GPU_PC pc=%llx count=%u\n", static_cast<unsigned long long>(pc), count);
+        for (const auto& [address, count] : stack)
+            std::printf("EDEN_GPU_STACK addr=%llx count=%u\n", static_cast<unsigned long long>(address), count);
+    }
     while (pc_reported < end) {
         const unsigned index = pc_reported++;
         ++counts[sampled_pcs[index]];

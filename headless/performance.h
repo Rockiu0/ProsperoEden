@@ -44,6 +44,10 @@ inline std::atomic<bool> capture_early{false};
 // Development: keep Eden's default library applets, which start some from the firmware
 // (dev-settings applets=firmware). The port otherwise uses the built-in ones (main.cpp).
 inline std::atomic<bool> firmware_applets{false};
+// Development: sample the GPU thread at ~250 Hz from 30 s after it starts (dev-settings gpu_pc_fast=on,
+// with the pc-sample.txt marker), each sample with the code addresses found on its stack, reported
+// every 5 s as EDEN_GPU_PC (interrupted PC) and EDEN_GPU_STACK (each stack code address once per sample).
+inline std::atomic<bool> gpu_pc_fast{false};
 #endif
 // Development: with every EDEN_SLOW_FRAME, how the GPU thread, the guest cores and the Vulkan
 // workers spent that interval (EDEN_SLOW_DETAIL), and the same per-frame average over each 5 s
