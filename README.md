@@ -10,7 +10,7 @@
 
 **ProsperoEden is an unofficial PlayStation 5 port of [Eden](https://github.com/eden-emulator/mirror)** - an accurate, high-performance emulator. All credit for the emulator core belongs to the Eden project and its contributors. ProsperoEden is not affiliated with or endorsed by the Eden team or Sony.
 
-This is an early alpha. Video, audio, controller input, and saves have been confirmed working. Compatibility and performance will vary between games. The current release is **v1.000.080**.
+This is an early alpha. Video, audio, controller input, and saves have been confirmed working. Compatibility and performance will vary between games. The current release is **v1.000.090**.
 
 ## Source code
 
@@ -229,6 +229,14 @@ The launcher follows the language the PS5 is set to: Arabic, Chinese (simplified
 ### Upgrading from an earlier alpha
 
 Earlier versions read everything from `/data/homebrew/PPSA99008/assets/`. That folder keeps working until you choose a game files folder, and settings are migrated automatically on first launch. To move to the new layout, move `assets/keys`, `assets/firmware` and `assets/roms` into any folder, then select it in **Settings > Game files**. The release ZIP contains no user files, so copy its app files over your installation without deleting your own data.
+
+## Changes in v1.000.090
+
+- **Fewer stutters in open worlds.** A game that keeps updating small parts of a very large texture made the emulator copy the whole texture to the GPU again each time, which gave 40-75 ms frames while running or turning the camera. Now only the changed rows of the texture are copied.
+- **Guest writes no longer wait for the GPU thread.** When a scene change creates many resources, the game's cores used to wait for the GPU thread's caches; their writes are now collected and applied before the next draw.
+- **Faster handling of writes to GPU buffers.** A game write to memory the GPU uses now marks the following buffer pages at once, instead of trapping on each one.
+- **Faster JIT.** Guest memory accesses use a direct page table, nearby accesses share one lookup, and several common instructions produce shorter code.
+- **Faster GPU command processing.** Long runs of plain register writes are handled in one pass, and the graphics code is built for the PS5's processor.
 
 ## Changes in v1.000.080
 
