@@ -870,6 +870,10 @@ int main(int argc, char** argv) {
                     Eden::DevVulkan::robustness2 = true;
                 } else if (entry == "vertex_input_dynamic=off" || entry == "vertex_input_dynamic=on") {
                     dev_vertex_input = entry.ends_with("on") ? 1 : 0;
+                } else if (entry == "vi_exp=filter" || entry == "vi_exp=nodiv") {
+                    Eden::DevVulkan::vi_experiment = entry.ends_with("filter") ? 1 : 2;
+                } else if (entry == "static_vi=off") {
+                    Eden::DevVulkan::static_vertex_input = false;
                 } else if (entry == "pipeline_trace=on") {
                     Eden::DevVulkan::trace_pipelines = true;
                 } else if (entry.starts_with("radv_debug=")) {
@@ -1038,12 +1042,8 @@ int main(int argc, char** argv) {
             // The block list is off unless the settings turn it on (block-list.txt in the app
             // folder still does, further down).
             if (!dev_block_list) Eden::JitList::enabled = speed.block_list;
-            // One title (0100F43008C44000) draws its early cutscenes as a flat colour with vertex
-            // input dynamic state, on other platforms too; it is correct with it off. Set for every
-            // session: the value outlives one.
-            Settings::values.vertex_input_dynamic_state.SetValue(
-                dev_vertex_input >= 0 ? dev_vertex_input == 1
-                                      : eden_game_title_id(guest) != 0x0100F43008C44000ULL);
+            // Set for every session: the value outlives one.
+            Settings::values.vertex_input_dynamic_state.SetValue(dev_vertex_input != 0);
             // The report reads the values back: what the emulator has, whoever set it.
             const auto on = [](bool value) { return value ? "on" : "off"; };
             Eden::Report("launch", (std::string("Performance: block list ") + on(Eden::JitList::enabled) +

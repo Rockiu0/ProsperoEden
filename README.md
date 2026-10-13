@@ -230,6 +230,10 @@ The launcher follows the language the PS5 is set to: Arabic, Chinese (simplified
 
 Earlier versions read everything from `/data/homebrew/PPSA99008/assets/`. That folder keeps working until you choose a game files folder, and settings are migrated automatically on first launch. To move to the new layout, move `assets/keys`, `assets/firmware` and `assets/roms` into any folder, then select it in **Settings > Game files**. The release ZIP contains no user files, so copy its app files over your installation without deleting your own data.
 
+## Changes in v1.000.093
+
+- **Better fix for the cutscenes that turned into a flat white or coloured screen.** The cause was a kind of draw that builds a full-screen triangle without reading any vertex data: with vertex input dynamic state the console's graphics driver drew it wrong, covering the scene with one colour. These draws now use a fixed vertex input, so the game that showed the problem (0100F43008C44000) keeps vertex input dynamic state on like every other game, with valid shader caches and no extra compile stutters.
+
 ## Changes in v1.000.092
 
 - **Fewer flickering and vanishing objects.** Some geometry that the game draws once per vertex was read as if every vertex were the same point, so objects disappeared for a moment (for example animated areas flickering over the scenery). It is now read correctly, and shader caches stay valid.
