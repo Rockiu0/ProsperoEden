@@ -5,7 +5,9 @@
 #include "frontend.h"
 
 #include "assets_dir.h"
+#include "hud.h"
 #include "audio_out_init.h"
+#include "boot_trace.h"
 #include "diagnostics.h"
 #include "eden_services.h"
 #include "update_notice.h"
@@ -23,6 +25,9 @@
 #include "crash_trigger.h"
 #include "development_input.h"
 #include "stop_limit.h"
+#include "system_keyboard.h"
+#include <atomic>
+#include <thread>
 #include <cerrno>
 #include <fstream>
 #endif
@@ -124,6 +129,9 @@ void LoadLanguage(pe::gfx::Font& font) {
                  static_cast<unsigned>(rc), tag.c_str(), catalog.c_str(), texts);
     std::fprintf(stderr, "EDEN_FONTS folder=%s files=%zu read=%s\n", folder.c_str(), files,
                  font.system_fonts_read().c_str());
+    // For a report from another console: what is shown depends on both.
+    Eden::BootTrace::Line("system language %s (%d, rc %#x), menu texts %s; console fonts: %zu in %s", tag.c_str(),
+                          system_language, static_cast<unsigned>(rc), catalog.c_str(), files, folder.c_str());
 }
 
 #ifdef EDEN_DEV_ROM_ID
@@ -162,7 +170,7 @@ int SaveCapture(const std::string& path, int width, int height) {
 }
 #endif
 
-std::string RunApp(const std::string& launch_error, bool first_start) {
+std::string RunApp(const std::string& launch_error, bool first_start, Eden::Multiplayer::RoomClient& rooms) {
     const auto opened = Clock::now();
     // What Settings > Video asks for, and what opened.
     int output = std::clamp(Eden::LoadPreferences().output, 0, static_cast<int>(std::size(Eden::kOutputKeys)) - 1);
@@ -172,11 +180,16 @@ std::string RunApp(const std::string& launch_error, bool first_start) {
         Eden::Report("menu video failure", pe::ps5::egl_error_name(display.last_error()));
         return {};
     }
-    // Something on screen at once: the launcher's own dark, then the first real frame.
-    glClearColor(0.024f, 0.035f, 0.039f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    display.swap();
-    sceSystemServiceHideSplashScreen();
+    // Something on screen at once. When the app has just been started that is the console's own
+    // launch picture: it stays until the launcher's first frame, which shows the same picture (the
+    // opening, pe/ui/launcher.cpp), so the app appears without a cut. Later the launcher's own dark.
+    bool splash_hidden = !first_start;
+    if (!first_start) {
+        glClearColor(0.024f, 0.035f, 0.039f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        display.swap();
+        sceSystemServiceHideSplashScreen();
+    }
 
     std::string selected_game;
     {
@@ -195,6 +208,7 @@ std::string RunApp(const std::string& launch_error, bool first_start) {
             glClearColor(0.7f, 0.08f, 0.16f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
             display.swap();
+            sceSystemServiceHideSplashScreen();
             batch.release();
             display.close();
             return {};
@@ -204,10 +218,15 @@ std::string RunApp(const std::string& launch_error, bool first_start) {
         const pe::ui::Fonts fonts{&font, font_texture};
 
         Eden::Report("setup", "Checking supplied keys and firmware");
-        EdenServices services(launch_error);
+        EdenServices services(launch_error, rooms);
         pe::ui::Textures textures(batch, services);
+        // The look the player chose names the artwork (pe/ui/theme.hpp).
+        pe::ui::use_theme(services.preferences().theme);
         if (!textures.load_art(Eden::AppFile("ui")))
             Eden::Report("menu", "Launcher art is incomplete; check the app's ui/art folder");
+        // The picture the console is showing now, for the opening.
+        if (first_start && !textures.load_splash(Eden::AppFile("sce_sys/pic0.dds")))
+            Eden::Report("menu", "The launch picture could not be loaded; the launcher opens without it");
         textures.set_output_scale(static_cast<float>(display.width()) / 1920.0f);
 
         // Sound: its own thread feeds the console's audio port from the mixer.
@@ -265,6 +284,25 @@ std::string RunApp(const std::string& launch_error, bool first_start) {
                 if (std::remove(Eden::AppFile("quit-app.txt").c_str()) == 0) {
                     std::fprintf(stderr, "EDEN_DEV_QUIT requested=1\n");
                     running = false;
+                }
+                // The check that the PS5 keyboard opens (system_keyboard.h): asked for from the
+                // launcher, left open for a few seconds, closed again.
+                if (std::remove(Eden::AppFile("keyboard-test.txt").c_str()) == 0) {
+                    std::thread([] {
+                        std::atomic<bool> stop{false};
+                        std::thread closer([&stop] {
+                            std::this_thread::sleep_for(std::chrono::seconds(6));
+                            stop = true;
+                        });
+                        Eden::TextRequest request;
+                        request.title = u"ProsperoEden";
+                        request.initial = u"Eden";
+                        request.max_length = 16;
+                        const Eden::TextAnswer answer = Eden::AskSystemKeyboard(request, stop);
+                        closer.join();
+                        std::fprintf(stderr, "EDEN_DEV_KEYBOARD outcome=%d length=%zu\n",
+                                     static_cast<int>(answer.outcome), answer.text.size());
+                    }).detach();
                 }
                 // The runner's crash request, to test the crash report in the launcher.
                 Eden::Crash::DevelopmentRequest(Eden::AppFile("crash-app.txt"));
@@ -346,6 +384,11 @@ std::string RunApp(const std::string& launch_error, bool first_start) {
                 Eden::Report("menu video failure", pe::ps5::egl_error_name(display.last_error()));
                 running = false;
             }
+            if (!splash_hidden) {
+                // The launcher's first frame is up: the console's launch picture can go.
+                sceSystemServiceHideSplashScreen();
+                splash_hidden = true;
+            }
             {
                 // A slow launcher frame names its stage in the log, at most once a second.
                 const auto done = Clock::now();
@@ -361,8 +404,21 @@ std::string RunApp(const std::string& launch_error, bool first_start) {
             }
         }
 
+        if (!splash_hidden) sceSystemServiceHideSplashScreen();
         selected_game = launcher.selected_game();
         if (!launcher.done()) selected_game.clear();
+        // The loading screen that follows wears the theme's colours (hud.h).
+        {
+            const pe::ui::Theme& theme = pe::ui::th();
+            const auto word = [](const pe::gfx::Color& colour) {
+                const auto byte = [](float value) {
+                    return static_cast<uint32_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+                };
+                return byte(colour.r) << 16 | byte(colour.g) << 8 | byte(colour.b);
+            };
+            Eden::Loading::Palette(word(theme.accent), word(theme.accent_pale), word(theme.accent_deep),
+                                   word(theme.base));
+        }
         // Let the last sound end (the screen is already dark), then give everything back.
         for (int wait = 0; audio_ready && wait < 60 && mixer->active_voices() > 0; ++wait) sceKernelUsleep(10000);
         audio.stop();
@@ -378,8 +434,8 @@ std::string RunApp(const std::string& launch_error, bool first_start) {
 
 } // namespace
 
-std::string SelectProsperoEdenGame(const std::string& launch_error) {
+std::string SelectProsperoEdenGame(Eden::Multiplayer::RoomClient& rooms, const std::string& launch_error) {
     // The first time is the app opening; afterwards the launcher returns from a game.
     static bool first_start = true;
-    return RunApp(launch_error, std::exchange(first_start, false));
+    return RunApp(launch_error, std::exchange(first_start, false), rooms);
 }

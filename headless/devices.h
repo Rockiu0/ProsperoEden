@@ -18,6 +18,13 @@ namespace Eden {
 // The PS5 controllers as the "virtual_gamepad" input engine that Eden binds every guest
 // controller to (buttons, sticks, motion), plus DualSense rumble: Eden's controllers send each
 // player's vibration here (hid_core output params, headless/CMakeLists.txt), one device per side.
+// Whether Eden's handheld controller is the one in use this session: chosen for the game
+// (Game settings > Controls > Controller type) or given to a game that takes nothing else
+// (controller_applet.h). Only then does player 1's DualSense play it as well (pad.cpp). Eden
+// connects its handheld controller by itself as soon as a button reaches it, so fed all the time
+// it appeared beside the player's own controller at the first press, in every game.
+inline std::atomic<bool> handheld_in_use{false};
+
 class PadEngine final : public InputCommon::InputEngine {
 public:
     using VirtualButton = InputCommon::VirtualGamepad::VirtualButton;
@@ -72,10 +79,14 @@ public:
     // Which DualSense button presses each of the game's buttons (button_mapping.h), for every
     // controller. Set before the first poll of a session.
     void SetMapping(const ButtonMapping& value) { mapping = ValidMapping(value) ? value : kDefaultMapping; }
-    // How a player's controller is used: as usual, or in place of a single left or right Joy-Con
-    // that its game has held sideways. The DualSense is then still held as usual, and Consume
-    // turns what it sends by a quarter (stick, button places, motion) to be that Joy-Con.
-    enum class Grip : u8 { usual, sideways_left, sideways_right };
+    // How a player's controller is used: as usual, or in place of a single left or right Joy-Con.
+    // A single Joy-Con has one stick and one cluster of four buttons, and its game reads nothing
+    // else. Held upright, Consume makes the whole DualSense that Joy-Con: the shapes are its four
+    // buttons, the arrows and either stick its stick, both pairs of shoulder buttons its two.
+    // Held sideways (the game says so), the
+    // DualSense is still held as usual, and Consume also turns what it sends by a quarter
+    // (stick, button places, motion).
+    enum class Grip : u8 { usual, sideways_left, sideways_right, upright_left, upright_right };
     void SetGrip(std::size_t player, Grip grip) {
         if (player < kMaxPlayers) grips[player].store(grip);
     }

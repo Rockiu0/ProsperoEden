@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "devices.h"
 #include "controller_applet.h"
+#include "keyboard_applet.h"
+#include <condition_variable>
+#include <mutex>
 #include "mock_devices.h"
 #include <algorithm>
 #include <cmath>
@@ -77,6 +80,21 @@ template<class F> void Reject(F&& f) {
 void CheckControllerStyle() {
     using Core::HID::NpadStyleIndex;
     Core::Frontend::ControllerParameters allowed{};
+    // A game's own Controller type goes first when the game takes it, the handheld for player 1
+    // only; one the game does not take is left aside.
+    {
+        Core::Frontend::ControllerParameters taken{};
+        taken.allow_pro_controller = taken.allow_handheld = taken.allow_left_joycon = true;
+        CHECK(Eden::ControllerStyle(taken, 0, -1) == NpadStyleIndex::Fullkey);
+        CHECK(Eden::ControllerStyle(taken, 1, 3) == NpadStyleIndex::JoyconLeft);
+        CHECK(Eden::ControllerStyle(taken, 0, 1) == NpadStyleIndex::Handheld);
+        CHECK(!Eden::ControllerStyle(taken, 1, 1));
+        CHECK(Eden::ControllerStyle(taken, 0, 4) == NpadStyleIndex::Fullkey);  // right Joy-Con: not taken
+        CHECK(Eden::ControllerStyle(taken, 0, 2) == NpadStyleIndex::Fullkey);  // pair: not taken
+        CHECK(Eden::ControllerSetting(-1) == Settings::ControllerType::ProController &&
+              Eden::ControllerSetting(1) == Settings::ControllerType::Handheld &&
+              Eden::ControllerSetting(4) == Settings::ControllerType::RightJoycon);
+    }
     // A game that names none of the styles: a Pro Controller for every player.
     CHECK(Eden::ControllerStyle(allowed, 0) == NpadStyleIndex::Fullkey);
     CHECK(Eden::ControllerStyle(allowed, 3) == NpadStyleIndex::Fullkey);
@@ -97,6 +115,110 @@ void CheckControllerStyle() {
     allowed.allow_pro_controller = true;
     CHECK(Eden::ControllerStyle(allowed, 3) == NpadStyleIndex::Fullkey);
     std::puts("Controller applet styles: pro, pair, single Joy-Cons, handheld in either mode, and a Pro Controller when none is named PASS");
+}
+
+// A game's text entry (keyboard_applet.h) with a keyboard that answers as told.
+void CheckKeyboard() {
+    using Eden::TextOutcome;
+    using Result = Service::AM::Frontend::SwkbdResult;
+    using Reply = Service::AM::Frontend::SwkbdReplyType;
+    std::mutex mutex;
+    std::condition_variable changed;
+    int answers_given = 0;
+    Result result{};
+    std::u16string text;
+    bool confirmed = false;
+    std::vector<Reply> replies;
+    const auto wait = [&](int count) {
+        std::unique_lock lock(mutex);
+        CHECK(changed.wait_for(lock, 5s, [&] { return answers_given >= count; }));
+    };
+    const auto normal = [&](Result result_, std::u16string text_, bool confirmed_) {
+        const std::lock_guard lock(mutex);
+        result = result_; text = std::move(text_); confirmed = confirmed_;
+        ++answers_given;
+        changed.notify_all();
+    };
+    std::vector<Eden::TextAnswer> script;
+    std::atomic<int> asked{0};
+    std::atomic<bool> hold{false};
+    Eden::TextRequest last;
+    Eden::SystemKeyboardApplet applet([&](const Eden::TextRequest& request, const std::atomic<bool>& stop) {
+        last = request;
+        while (hold && !stop) std::this_thread::sleep_for(5ms);
+        if (hold) return Eden::TextAnswer{TextOutcome::cancelled, {}};
+        return script[std::min<std::size_t>(asked++, script.size() - 1)];
+    });
+    Core::Frontend::KeyboardInitializeParameters wanted{};
+    wanted.header_text = u"Name"; wanted.initial_text = u"Alex"; wanted.max_text_length = 8; wanted.min_text_length = 2;
+    const auto ask = [&](std::vector<Eden::TextAnswer> answers) {
+        script = std::move(answers); asked = 0;
+        applet.InitializeKeyboard(false, wanted, normal, {});
+        applet.ShowNormalKeyboard();
+    };
+    // What the player enters is the game's to check.
+    ask({{TextOutcome::accepted, u"Robin"}}); wait(1);
+    CHECK(result == Result::Ok && text == u"Robin" && !confirmed);
+    CHECK(last.title == u"Name" && last.initial == u"Alex" && last.max_length == 8 && !last.numbers && !last.password);
+    // A text shorter than the game asks for is asked for again, from what was entered.
+    ask({{TextOutcome::accepted, u"R"}, {TextOutcome::accepted, u"Ro"}}); wait(2);
+    CHECK(result == Result::Ok && text == u"Ro" && asked == 2 && last.initial == u"R");
+    // Closing the keyboard cancels the entry.
+    ask({{TextOutcome::cancelled, {}}}); wait(3);
+    CHECK(result == Result::Cancel && asked == 1);
+    // A game without a cancel button is asked again, then gets the text it started from.
+    wanted.disable_cancel_button = true;
+    ask({{TextOutcome::cancelled, {}}}); wait(4);
+    CHECK(result == Result::Ok && text == u"Alex" && confirmed && asked == Eden::SystemKeyboardApplet::kAttempts);
+    wanted.disable_cancel_button = false;
+    // No keyboard: the starting text, or "Eden" in the lengths the game asks for.
+    ask({{TextOutcome::unavailable, {}}}); wait(5);
+    CHECK(result == Result::Ok && text == u"Alex" && confirmed);
+    wanted.initial_text.clear(); wanted.max_text_length = 3;
+    ask({{TextOutcome::unavailable, {}}}); wait(6);
+    CHECK(result == Result::Ok && text == u"Ede" && confirmed);
+    wanted.max_text_length = 8; wanted.min_text_length = 6;
+    ask({{TextOutcome::unavailable, {}}}); wait(7);
+    CHECK(text == u"Eden00");
+    wanted.min_text_length = 2;
+    // The game refuses a text: asked again; and again: the entry is cancelled.
+    ask({{TextOutcome::accepted, u"Robin"}}); wait(8);
+    applet.ShowTextCheckDialog(Service::AM::Frontend::SwkbdTextCheckResult::Failure, u"Not this one"); wait(9);
+    CHECK(result == Result::Ok && last.initial == u"Robin");
+    applet.ShowTextCheckDialog(Service::AM::Frontend::SwkbdTextCheckResult::Failure, u"Not this one"); wait(10);
+    applet.ShowTextCheckDialog(Service::AM::Frontend::SwkbdTextCheckResult::Failure, u"Not this one"); wait(11);
+    CHECK(result == Result::Cancel && confirmed);
+    // A text the game wants confirmed is confirmed.
+    ask({{TextOutcome::accepted, u"Robin"}}); wait(12);
+    applet.ShowTextCheckDialog(Service::AM::Frontend::SwkbdTextCheckResult::Confirm, u"Sure?"); wait(13);
+    CHECK(result == Result::Ok && text == u"Robin" && confirmed);
+    // A request closed while its keyboard is open: the keyboard is told to close, no answer comes.
+    hold = true;
+    applet.InitializeKeyboard(false, wanted, normal, {});
+    applet.ShowNormalKeyboard();
+    std::this_thread::sleep_for(50ms);
+    applet.ExitKeyboard();
+    std::this_thread::sleep_for(200ms);
+    hold = false;
+    { const std::lock_guard lock(mutex); CHECK(answers_given == 13); }
+    // A keyboard inside the game's own screen: the text, then the decision.
+    std::u16string inline_text;
+    const auto inline_reply = [&](Reply reply, std::u16string text_, s32) {
+        const std::lock_guard lock(mutex);
+        replies.push_back(reply); inline_text = std::move(text_);
+        ++answers_given;
+        changed.notify_all();
+    };
+    script = {{TextOutcome::accepted, u"Hi"}}; asked = 0;
+    applet.InitializeKeyboard(true, wanted, {}, inline_reply);
+    applet.ShowInlineKeyboard({});
+    wait(15);
+    CHECK(replies.size() == 2 && replies[0] == Reply::ChangedString && replies[1] == Reply::DecidedEnter && inline_text == u"Hi");
+    script = {{TextOutcome::cancelled, {}}}; asked = 0;
+    applet.ShowInlineKeyboard({});
+    wait(16);
+    CHECK(replies.back() == Reply::DecidedCancel && inline_text == u"Hi");
+    std::puts("Text entry: entered, too short, cancelled, no cancel button, no keyboard, refused, confirmed, closed while open, inline PASS");
 }
 
 void CheckPad() {
@@ -121,8 +243,20 @@ void CheckPad() {
             for (int i = 0; i < 22; ++i)
                 CHECK(pad.Engine().GetButton({}, i) == (i == button || (sl_sr >= 0 && (i == sl_sr || i == sl_sr + 4))));
         }
+        // Player 1's DualSense plays Eden's handheld controller (port 8) only while that is the
+        // controller in use: a button that reached it at any other time would connect it.
+        sample.buttons = kButtonCircle; sample.left_stick = {0, 255}; consume();
+        CHECK(pad.Engine().GetButton({}, 0)); CHECK(!pad.Engine().GetButton({.port = 8}, 0));
+        CHECK(pad.Engine().GetAxis({.port = 8}, 0) == 0);
+        sample.buttons = 0; sample.left_stick = {128, 128}; consume();
+        Eden::handheld_in_use = true;
+        sample.buttons = kButtonCircle; consume();
+        CHECK(pad.Engine().GetButton({.port = 8}, 0)); CHECK(!pad.Engine().GetButton({.port = 8}, 1));
         sample.buttons = 0;
         sample.left_stick = {0, 255}; sample.right_stick = {255, 0}; consume();
+        CHECK(!pad.Engine().GetButton({.port = 8}, 0));
+        CHECK(pad.Engine().GetAxis({.port = 8}, 0) == -1); CHECK(pad.Engine().GetAxis({.port = 8}, 3) == 1);
+        Eden::handheld_in_use = false;
         CHECK(pad.Engine().GetAxis({}, 0) == -1); CHECK(pad.Engine().GetAxis({}, 1) == -1);
         CHECK(pad.Engine().GetAxis({}, 2) == 1); CHECK(pad.Engine().GetAxis({}, 3) == 1);
         sample.left_stick = {128, 132}; sample.triggers = {127, 128}; consume();
@@ -278,6 +412,67 @@ void CheckPad() {
             sample.acceleration = {}; sample.angular_velocity = {}; sample.timestamp_us = 0;
             sample.buttons = 0; sample.connected = 0; consume(); sample.connected = 1; consume();
             std::puts("Single Joy-Con held sideways: button places, either stick and motion turned for both sides PASS");
+
+            // A single Joy-Con held upright: nothing is turned, and the whole DualSense is that
+            // Joy-Con. A left one's four buttons are its arrows (13 Up, 14 Right, 15 Down,
+            // 12 Left), pressed by the shapes at the same places; the shapes still press A, B,
+            // X and Y, which a left Joy-Con has not. The DualSense's arrows press none of them:
+            // they move the stick.
+            const auto near = [](float value, float wanted) { return std::abs(value - wanted) < 0.001f; };
+            const auto tilted = [&](ButtonMask mask, int axis_x, float x, float y) {
+                sample.buttons = mask; consume();
+                return near(pad.Engine().GetAxis({}, axis_x), x) && near(pad.Engine().GetAxis({}, axis_x + 1), y);
+            };
+            const auto others = [&](ButtonMask mask, int button) {
+                sample.buttons = mask; consume();
+                return pad.Engine().GetButton({}, button);
+            };
+            pad.SetGrip(0, Grip::upright_left);
+            CHECK(pressed(kButtonUp, {})); CHECK(pressed(kButtonRight, {}));
+            CHECK(pressed(kButtonDown, {})); CHECK(pressed(kButtonLeft, {}));
+            CHECK(pressed(kButtonTriangle, {13, 2})); CHECK(pressed(kButtonCircle, {14, 0}));
+            CHECK(pressed(kButtonCross, {15, 1})); CHECK(pressed(kButtonSquare, {12, 3}));
+            CHECK(tilted(kButtonUp, 0, 0, 1)); CHECK(tilted(kButtonRight, 0, 1, 0));
+            CHECK(tilted(kButtonDown, 0, 0, -1)); CHECK(tilted(kButtonLeft, 0, -1, 0));
+            CHECK(tilted(kButtonUp | kButtonRight, 0, 0.7071f, 0.7071f)); CHECK(tilted(0, 0, 0, 0));
+            // Its L (6), ZL (8), Minus (11) and stick click (4) from either side of the DualSense.
+            CHECK(others(kButtonR1, 6)); CHECK(others(kButtonL1, 6)); CHECK(others(kButtonOptions, 11));
+            CHECK(others(kButtonR3, 4)); CHECK(others(kButtonL3, 4)); CHECK(!others(0, 6)); CHECK(!others(0, 11));
+            sample.buttons = 0; sample.triggers.r2 = 255; consume();
+            CHECK(pad.Engine().GetButton({}, 8));
+            sample.triggers.r2 = 0; consume();
+            CHECK(!pad.Engine().GetButton({}, 8));
+            sample.left_stick = {128, 128}; sample.right_stick = {255, 128}; consume(); // right, other stick
+            CHECK(pad.Engine().GetAxis({}, 0) == 1); CHECK(pad.Engine().GetAxis({}, 1) == 0);
+            sample.left_stick = {128, 0}; sample.right_stick = {128, 128}; consume(); // up
+            CHECK(pad.Engine().GetAxis({}, 0) == 0); CHECK(pad.Engine().GetAxis({}, 1) == 1);
+            sample.left_stick = {128, 128};
+
+            // A right one's four buttons are A (0), B (1), X (2) and Y (3), pressed by the
+            // shapes and by the arrows at the same places; its stick is the right one.
+            pad.SetGrip(0, Grip::upright_right);
+            CHECK(pressed(kButtonTriangle, {2})); CHECK(pressed(kButtonCircle, {0}));
+            CHECK(pressed(kButtonCross, {1})); CHECK(pressed(kButtonSquare, {3}));
+            // The arrows stay the arrows, which a right Joy-Con has not, and move its stick.
+            CHECK(pressed(kButtonUp, {13})); CHECK(pressed(kButtonRight, {14}));
+            CHECK(pressed(kButtonDown, {15})); CHECK(pressed(kButtonLeft, {12}));
+            CHECK(tilted(kButtonUp, 2, 0, 1)); CHECK(tilted(kButtonLeft, 2, -1, 0));
+            CHECK(tilted(kButtonDown | kButtonLeft, 2, -0.7071f, -0.7071f)); CHECK(tilted(0, 2, 0, 0));
+            // Its R (7), ZR (9), Plus (10) and stick click (5).
+            CHECK(others(kButtonL1, 7)); CHECK(others(kButtonR1, 7)); CHECK(others(kButtonCreate, 10));
+            CHECK(others(kButtonOptions, 10)); CHECK(others(kButtonL3, 5)); CHECK(!others(0, 7)); CHECK(!others(0, 10));
+            sample.buttons = 0; sample.triggers.l2 = 255; consume();
+            CHECK(pad.Engine().GetButton({}, 9));
+            sample.triggers.l2 = 0; consume();
+            sample.left_stick = {128, 0}; consume(); // up, on the stick a right Joy-Con has not
+            CHECK(pad.Engine().GetAxis({}, 2) == 0); CHECK(pad.Engine().GetAxis({}, 3) == 1);
+            sample.left_stick = {255, 128}; consume(); // right
+            CHECK(pad.Engine().GetAxis({}, 2) == 1); CHECK(pad.Engine().GetAxis({}, 3) == 0);
+            sample.left_stick = {128, 128};
+
+            pad.SetGrip(0, Grip::usual);
+            sample.buttons = 0; sample.connected = 0; consume(); sample.connected = 1; consume();
+            std::puts("Single Joy-Con held upright: its four buttons from the shapes, its stick from the arrows and either stick, shoulder buttons PASS");
         }
 
         // Rumble: both guest sides on one DualSense; low band -> large motor, high band -> small.
@@ -444,7 +639,10 @@ void CheckAudio() {
     Reject([&] { stream->AppendBuffer(buffer, pcm); });
     sink.CloseStreams(); state.fail_output = false;
     const int opened = state.audio_opens;
-    sink.AcquireSinkStream(system, 2, "input null", StreamType::In);
+    auto* input = sink.AcquireSinkStream(system, 2, "input null", StreamType::In);
+    const auto released = input->ReleaseBuffer(0xf00 / sizeof(s16));
+    CHECK(released.size() == 0xf00 / sizeof(s16));
+    CHECK(std::ranges::all_of(released, [](s16 sample) { return sample == 0; }));
     sink.CloseStreams(); CHECK(state.audio_opens == opened);
     CHECK(state.audio_opens == state.audio_closes); CHECK(state.audio_drains == 6);
     std::puts("Audio PCM mono/stereo/6-channel, volume, queue, underrun, pause/resume and failure cleanup PASS");
@@ -562,7 +760,7 @@ void CheckResampling() {
 int main() {
     Common::FS::CreateEdenPaths(); Common::Log::Initialize(); Common::Log::Start();
     int status = 0;
-    try { CheckResampling(); CheckVoiceFlags(); CheckControllerStyle(); CheckPad(); CheckAudio(); }
+    try { CheckResampling(); CheckVoiceFlags(); CheckControllerStyle(); CheckKeyboard(); CheckPad(); CheckAudio(); }
     catch (const std::exception& error) { std::fprintf(stderr, "%s\n", error.what()); status = 1; }
     Common::Log::Stop();
     return status;

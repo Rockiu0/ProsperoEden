@@ -3,6 +3,10 @@
 # keep UPPERCASE labels uppercase, and keep names (ProsperoEden, Eden, PS5, Vulkan, OpenGL,
 # AMD FSR, DLC, NSP, XCI, prod.keys, Ryujinx) unchanged.
 
+#: pe/ui/save_sync.cpp
+msgid "%Y-%m-%d %H:%M"
+msgstr "%Y/%m/%d %H:%M"
+
 #: settings_store.h
 msgid "0.5x (faster, softer)"
 msgstr "0.5x（速い、やわらかい）"
@@ -35,7 +39,12 @@ msgstr "4x（最も遅い）"
 msgid "A firmware NCA cannot be read. Reinstall the firmware dump."
 msgstr "ファームウェアのNCAを読み込めません。ファームウェアを入れ直してください。"
 
-#: pe/ui/home.cpp
+#: pe/ui/pairing.cpp
+msgid "A pairing is running already."
+msgstr "すでにペアリングを実行中です。"
+
+#. The menu's last section: about this app (its credits, where its files go). One short word.
+#: pe/ui/shell.cpp
 msgid "About"
 msgstr "このアプリについて"
 
@@ -44,12 +53,12 @@ msgid "About ProsperoEden"
 msgstr "ProsperoEdenについて"
 
 #. Time left while downloading; {0} is a number of minutes. Keep it short.
-#: pe/ui/update.cpp
+#: pe/ui/remote.cpp, pe/ui/update.cpp
 msgid "About {0} min left"
 msgstr "残り約{0}分"
 
 #. Time left while downloading; {0} is a number of seconds. Keep it short.
-#: pe/ui/update.cpp
+#: pe/ui/remote.cpp, pe/ui/update.cpp
 msgid "About {0} s left"
 msgstr "残り約{0}秒"
 
@@ -63,31 +72,17 @@ msgstr "アクセス"
 msgid "Accessibility"
 msgstr "アクセシビリティ"
 
-#: pe/ui/settings.cpp
-msgid "ACCESSIBILITY"
-msgstr "アクセシビリティ"
-
 #: pe/ui/profiles.cpp
 msgid "Add"
 msgstr "追加"
 
-#. Label: a game's updates, DLC and mods.
-#: pe/ui/library.cpp
-msgid "ADD-ONS"
-msgstr "アドオン"
-
-#. {0}: updates, DLC and mods of the game; {1}: the language it will use.
-#: pe/ui/home.cpp
-msgid "Add-ons: {0}  /  Language: {1}"
-msgstr "アドオン：{0}  /  言語：{1}"
+#: pe/ui/remote.cpp
+msgid "Added to the downloads. Settings, Downloads shows the queue."
+msgstr "ダウンロードに追加しました。待機列は設定の「ダウンロード」で確認できます。"
 
 #: pe/ui/profiles.cpp
 msgid "Added. Cross plays as this profile; left and right change its name."
 msgstr "追加しました。バツでこのプロフィールでプレイ、左右で名前を変更。"
-
-#: pe/ui/settings.cpp
-msgid "Adjust the essentials without leaving your library behind."
-msgstr "ライブラリを離れずに、基本的な設定を調整できます。"
 
 #: pe/ui/browse.cpp
 msgid "All credit for the Eden emulator goes to its developers and contributors."
@@ -106,31 +101,44 @@ msgstr "別の言語"
 msgid "As usual"
 msgstr "いつもどおり"
 
+#: pe/ui/pairing.cpp
+msgid "Asking the server for a code..."
+msgstr "サーバーにコードを要求しています..."
+
+#. Setting: how a game's textures in the ASTC format are held in graphics memory. ASTC is a format's name (unchanged).
+#: pe/ui/game_options.cpp, pe/ui/settings.cpp
+msgid "ASTC textures"
+msgstr "ASTCテクスチャ"
+
 #. A switch. A shader is a small graphics program; keep the word the language's players use for it.
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "Asynchronous shaders"
 msgstr "非同期シェーダー"
 
-#: pe/ui/settings.cpp
-msgid "ASYNCHRONOUS SHADERS"
-msgstr "非同期シェーダー"
-
-#: pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/settings.cpp
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "Audio"
-msgstr "オーディオ"
-
-#: pe/ui/settings.cpp
-msgid "AUDIO"
 msgstr "オーディオ"
 
 #: eden_services.cpp
 msgid "Australia"
 msgstr "オーストラリア"
 
+#: pe/ui/game_options.cpp, pe/ui/settings.cpp
+msgid "Auto"
+msgstr "自動"
+
+#: pe/ui/game_options.cpp
+msgid "Automatic"
+msgstr "自動"
+
 #. Button hint: go back one screen.
-#: pe/ui/browse.cpp, pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/profiles.cpp, pe/ui/settings.cpp, pe/ui/update.cpp
+#: pe/ui/browse.cpp, pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/multiplayer.cpp, pe/ui/pairing.cpp, pe/ui/profiles.cpp, pe/ui/remote.cpp, pe/ui/save_sync.cpp, pe/ui/settings.cpp, pe/ui/update.cpp
 msgid "Back"
 msgstr "戻る"
+
+#: pe/ui/save_sync.cpp
+msgid "Backing up save data"
+msgstr "セーブデータをバックアップ中"
 
 #. An upscaling filter.
 #: settings_store.h
@@ -143,30 +151,26 @@ msgid "Bilinear"
 msgstr "バイリニア"
 
 #. Button hint: move through the list.
-#: pe/ui/browse.cpp
+#: pe/ui/browse.cpp, pe/ui/multiplayer.cpp
 msgid "Browse"
 msgstr "移動"
 
-#: pe/ui/library.cpp
-msgid "Browse games"
-msgstr "ゲームを選ぶ"
-
-#: pe/ui/settings.cpp
-msgid "Browse settings"
-msgstr "設定を選ぶ"
+#: pe/ui/multiplayer.cpp
+msgid "Browse the public directory and choose a room."
+msgstr "公開リストからルームを選びます。"
 
 #. Which controller button presses each of the game's buttons.
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "Button mapping"
 msgstr "ボタン割り当て"
 
-#: pe/ui/settings.cpp
-msgid "BUTTON MAPPING"
-msgstr "ボタン割り当て"
-
-#: pe/ui/update.cpp
+#: pe/ui/pairing.cpp, pe/ui/update.cpp
 msgid "Cancel"
 msgstr "キャンセル"
+
+#: pe/ui/library.cpp, pe/ui/remote.cpp
+msgid "Cancel download"
+msgstr "ダウンロードをキャンセル"
 
 #: pe/ui/update.cpp
 msgid "Cancelling"
@@ -185,6 +189,10 @@ msgstr "変更"
 msgid "Change mode. Saved per game."
 msgstr "モードを変更します。ゲームごとに保存されます。"
 
+#: pe/ui/save_sync.cpp
+msgid "Change nothing"
+msgstr "何も変更しない"
+
 #. The button mapping has been changed.
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "Changed"
@@ -194,6 +202,18 @@ msgstr "変更あり"
 #: eden_services.cpp, host/fake_services.cpp
 msgid "Cheats"
 msgstr "チート"
+
+#: pe/ui/pairing.cpp
+msgid "Check that the code there is this one, and approve."
+msgstr "表示されたコードがこのコードと同じことを確認し、承認してください。"
+
+#: pe/ui/remote.cpp
+msgid "Checking the game files {0}"
+msgstr "ゲームファイルを確認中 {0}"
+
+#: pe/ui/remote.cpp
+msgid "Checking {0}"
+msgstr "確認中 {0}"
 
 #: eden_services.cpp
 msgid "China"
@@ -208,7 +228,7 @@ msgid "Chinese (Traditional)"
 msgstr "中国語（繁体字）"
 
 #. Button hint: choose the highlighted language.
-#: pe/ui/browse.cpp
+#: pe/ui/browse.cpp, pe/ui/save_sync.cpp
 msgid "Choose"
 msgstr "選択"
 
@@ -229,7 +249,7 @@ msgstr "ゲームで使う言語を選んでください"
 msgid "Circle"
 msgstr "マル"
 
-#: pe/ui/update.cpp
+#: pe/ui/remote.cpp, pe/ui/update.cpp
 msgid "Close"
 msgstr "閉じる"
 
@@ -239,12 +259,33 @@ msgid "Compile ahead"
 msgstr "事前コンパイル"
 
 #: pe/ui/settings.cpp
-msgid "COMPILE AHEAD"
-msgstr "事前コンパイル"
-
-#: pe/ui/settings.cpp
 msgid "Compiles the code a game used before as it starts, so new areas stutter less."
 msgstr "以前に使われたコードをゲーム起動時にコンパイルし、新しいエリアでのカクつきを減らします。"
+
+#. A choice of 'ASTC textures': the textures are kept compressed (less memory). Keep it short.
+#: settings_store.h
+msgid "Compressed"
+msgstr "圧縮"
+
+#: pe/ui/multiplayer.cpp
+msgid "Connect using a room address, port and password."
+msgstr "ルームのアドレス、ポート、パスワードで接続します。"
+
+#: pe/ui/home.cpp, pe/ui/multiplayer.cpp
+msgid "Connected"
+msgstr "接続済み"
+
+#: pe/ui/multiplayer.cpp
+msgid "Connecting..."
+msgstr "接続しています..."
+
+#: pe/ui/multiplayer.cpp
+msgid "Connection failed"
+msgstr "接続に失敗しました"
+
+#: pe/ui/multiplayer.cpp
+msgid "Connection problem"
+msgstr "接続の問題"
 
 #: pe/ui/library.cpp
 msgid "Console mode"
@@ -254,29 +295,41 @@ msgstr "本体モード"
 msgid "CONTINUE PLAYING"
 msgstr "続きからプレイ"
 
-#: pe/ui/settings.cpp
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "Controller shortcuts and supported features."
 msgstr "コントローラーのショートカットと対応機能。"
+
+#: pe/ui/game_options.cpp
+msgid "Controller type"
+msgstr "コントローラーの種類"
 
 #: pe/ui/home.cpp
 msgid "CONTROLLERS"
 msgstr "コントローラー"
 
-#: pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/settings.cpp
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "Controls"
 msgstr "操作"
 
-#: pe/ui/settings.cpp
-msgid "CONTROLS"
-msgstr "操作"
+#: pe/ui/remote.cpp
+msgid "Could not cancel the download."
+msgstr "ダウンロードをキャンセルできませんでした。"
+
+#: pe/ui/pairing.cpp
+msgid "Could not change save-sync.json."
+msgstr "save-sync.jsonを変更できませんでした。"
 
 #: pe/ui/library.cpp
 msgid "Could not create the folder. Check that the game files folder can be written."
 msgstr "フォルダーを作成できませんでした。ゲームファイルのフォルダーに書き込めるか確認してください。"
 
 #: pe/ui/library.cpp
-msgid "Could not save console mode. Please try again."
-msgstr "本体モードを保存できませんでした。もう一度お試しください。"
+msgid "Could not delete the game."
+msgstr "ゲームを削除できませんでした。"
+
+#: eden_services.cpp
+msgid "Could not delete {0}."
+msgstr "{0}を削除できませんでした。"
 
 #: pe/ui/launcher.cpp
 msgid "Could not save settings. Please try again."
@@ -289,6 +342,10 @@ msgstr "フォルダーを保存できませんでした。もう一度お試し
 #: pe/ui/browse.cpp, pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/profiles.cpp
 msgid "Could not save. Please try again."
 msgstr "保存できませんでした。もう一度お試しください。"
+
+#: pe/ui/multiplayer.cpp
+msgid "Could not start the connection or save its settings."
+msgstr "接続を開始できないか、設定を保存できませんでした。"
 
 #. The DualSense button labelled CREATE: keep the label if the language's players do.
 #: pe/ui/game_options.cpp
@@ -327,12 +384,24 @@ msgstr "標準のフォルダー"
 msgid "Default folder saved. Reopen ProsperoEden to use it."
 msgstr "標準のフォルダーを保存しました。ProsperoEdenを開き直すと使われます。"
 
-#: pe/ui/settings.cpp
-msgid "Detailed logging"
-msgstr "詳細ログ"
+#: pe/ui/library.cpp
+msgid "Delete"
+msgstr "削除"
+
+#: pe/ui/library.cpp
+msgid "Delete from console"
+msgstr "本体から削除"
+
+#: eden_services.cpp
+msgid "Deleted 1 file ({0}). Save data and settings are kept."
+msgstr "1個のファイルを削除しました（{0}）。セーブデータと設定は残ります。"
+
+#: eden_services.cpp, host/fake_services.cpp
+msgid "Deleted {1} files ({0}). Save data and settings are kept."
+msgstr "{1}個のファイルを削除しました（{0}）。セーブデータと設定は残ります。"
 
 #: pe/ui/settings.cpp
-msgid "DETAILED LOGS"
+msgid "Detailed logging"
 msgstr "詳細ログ"
 
 #: pe/ui/settings.cpp
@@ -343,32 +412,67 @@ msgstr "詳細ログは次のゲーム起動から有効になります。"
 msgid "Detailed logs on"
 msgstr "詳細ログ オン"
 
-#. Button hint: show the game's details.
-#: pe/ui/home.cpp
-msgid "Details"
-msgstr "詳細"
-
 #: pe/ui/settings.cpp
 msgid "Diagnostics"
 msgstr "診断"
 
-#: pe/ui/settings.cpp
-msgid "DIAGNOSTICS"
-msgstr "診断"
-
 #. Console mode: the console as if connected to a TV. Keep it short (about 9 letters).
-#: pe/ui/library.cpp
+#: pe/ui/library.cpp, pe/ui/shell.cpp
 msgid "Docked"
 msgstr "TVモード"
+
+#: pe/ui/pairing.cpp
+msgid "Done"
+msgstr "完了"
+
+#: pe/ui/library.cpp, pe/ui/remote.cpp
+msgid "Download"
+msgstr "ダウンロード"
+
+#: pe/ui/library.cpp
+msgid "Download and play"
+msgstr "ダウンロードしてプレイ"
+
+#: pe/ui/remote.cpp
+msgid "Download cancelled."
+msgstr "ダウンロードをキャンセルしました。"
+
+#: pe/ui/remote.cpp
+msgid "Download failed"
+msgstr "ダウンロード失敗"
+
+#: pe/ui/remote.cpp
+msgid "Download from"
+msgstr "ダウンロード元を選択"
+
+#: pe/ui/remote.cpp
+msgid "Download in the background"
+msgstr "バックグラウンドでダウンロード"
 
 #. {0} is a size such as 36.4 MB.
 #: pe/ui/update.cpp
 msgid "Download size: {0}"
 msgstr "ダウンロードサイズ：{0}"
 
+#: pe/ui/library.cpp
+msgid "Download the game to change its settings."
+msgstr "設定を変更するには、ゲームをダウンロードしてください。"
+
 #: pe/ui/update.cpp
 msgid "Downloading"
 msgstr "ダウンロード中"
+
+#: pe/ui/remote.cpp
+msgid "Downloading {0}"
+msgstr "ダウンロード中 {0}"
+
+#: pe/ui/remote.cpp, pe/ui/settings.cpp
+msgid "Downloads"
+msgstr "ダウンロード"
+
+#: pe/ui/remote.cpp
+msgid "Downloads need an FTP server running on the console, on port {0}."
+msgstr "ダウンロードには、本体のポート{0}でFTPサーバーが動作している必要があります。"
 
 #: pe/ui/settings.cpp
 msgid "Draws an effect once its shader is ready instead of pausing. Things can be missing for a moment."
@@ -378,6 +482,10 @@ msgstr "シェーダーの準備ができてからエフェクトを描画し、
 msgid "Draws the menu's small text larger."
 msgstr "メニューの小さな文字を大きく表示します。"
 
+#: pe/ui/game_options.cpp
+msgid "Dual Joy-Cons"
+msgstr "Joy-Con 2本持ち"
+
 #: settings_store.h
 msgid "Dutch"
 msgstr "オランダ語"
@@ -386,14 +494,22 @@ msgstr "オランダ語"
 msgid "Each profile keeps its own save data, settings and recent games."
 msgstr "プロフィールごとにセーブデータ、設定、最近のゲームが分かれます。"
 
-#: pe/ui/home.cpp
-msgid "Eden emulator for PlayStation 5"
-msgstr "PlayStation 5用Edenエミュレーター"
+#: pe/ui/pairing.cpp
+msgid "Each profile keeps its save data on a server, as its own user there. Pair one with Cross: no typing, your phone does the signing in."
+msgstr "プロフィールごとに、サーバー上の専用ユーザーとしてセーブデータを保存します。バツでペアリング。入力は不要で、サインインはスマートフォンで行います。"
 
-#. Label of the shortcut that ends the running game.
 #: pe/ui/settings.cpp
-msgid "END GAME"
-msgstr "ゲームを終了"
+msgid "Each profile's save data on a server of its own, synced before and after a game."
+msgstr "各プロフィールのセーブデータを専用のサーバーに保存し、ゲームの前後に同期します。"
+
+#: pe/ui/settings.cpp
+msgid "Eden's debug messages in the logs of a game."
+msgstr "ゲームのログに Eden のデバッグメッセージを含めます。"
+
+#. A button hint: opens the keyboard to type a number. One short word, and not the word used for Change.
+#: pe/ui/library.cpp
+msgid "Edit"
+msgstr "編集"
 
 #: pe/ui/settings.cpp
 msgid "End the game and return to this menu"
@@ -403,9 +519,18 @@ msgstr "ゲームを終了してこのメニューに戻る"
 msgid "English (UK)"
 msgstr "英語（イギリス）"
 
-#: settings_store.h
+#: host/fake_services.cpp, settings_store.h
 msgid "English (US)"
 msgstr "英語（アメリカ）"
+
+#. Shown when what was typed for the RNG seed is not such a number.
+#: pe/ui/game_options.cpp
+msgid "Enter a number between 0 and 4294967295."
+msgstr "0〜4294967295の数値を入力してください。"
+
+#: pe/ui/multiplayer.cpp
+msgid "Enter a UDP port between 1 and 65535."
+msgstr "1〜65535のUDPポートを入力してください。"
 
 #: eden_services.cpp
 msgid "Europe"
@@ -430,20 +555,12 @@ msgstr "{0} に書き出しました。"
 msgid "Faster CPU emulation"
 msgstr "高速CPUエミュレーション"
 
-#: pe/ui/settings.cpp
-msgid "FASTER CPU EMULATION"
-msgstr "高速CPUエミュレーション"
-
 #. A switch: memory transfers to the emulated graphics processor are less exact and faster. DMA is a name (unchanged).
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "Faster DMA"
 msgstr "高速DMA"
 
-#: pe/ui/settings.cpp
-msgid "FASTER DMA"
-msgstr "高速DMA"
-
-#: pe/ui/settings.cpp
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "Faster games, at some cost in accuracy."
 msgstr "精度を少し下げて、ゲームを速くします。"
 
@@ -451,14 +568,6 @@ msgstr "精度を少し下げて、ゲームを速くします。"
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "Faster GPU emulation"
 msgstr "高速GPUエミュレーション"
-
-#: pe/ui/settings.cpp
-msgid "FASTER GPU EMULATION"
-msgstr "高速GPUエミュレーション"
-
-#: pe/ui/library.cpp
-msgid "FILE"
-msgstr "ファイル"
 
 #. What a mod is made of: files that replace the game's own.
 #: eden_services.cpp, host/fake_services.cpp
@@ -498,18 +607,25 @@ msgstr "設定に従う"
 msgid "For every controller. A game can have its own."
 msgstr "すべてのコントローラーに適用。ゲームごとにも設定できます。"
 
-#: pe/ui/library.cpp
-msgid "FORMAT"
-msgstr "形式"
-
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "FPS overlay"
 msgstr "FPS表示"
 
-#. Label: the frames-per-second counter drawn over a game.
-#: pe/ui/settings.cpp
-msgid "FPS OVERLAY"
-msgstr "FPS表示"
+#: pe/ui/game_options.cpp, pe/ui/settings.cpp
+msgid "Frame gen multiplier"
+msgstr "フレーム生成の倍率"
+
+#: pe/ui/game_options.cpp, pe/ui/settings.cpp
+msgid "Frame gen target"
+msgstr "フレーム生成の目標"
+
+#: pe/ui/game_options.cpp, pe/ui/settings.cpp, pe/ui/shell.cpp
+msgid "Frame generation"
+msgstr "フレーム生成"
+
+#: pe/ui/game_options.cpp, pe/ui/settings.cpp
+msgid "Frame generation needs Lossless.dll, from Lossless Scaling, in the lossless folder."
+msgstr "フレーム生成には、lossless フォルダーに Lossless Scaling の Lossless.dll が必要です。"
 
 #: settings_store.h
 msgid "French"
@@ -519,12 +635,21 @@ msgstr "フランス語"
 msgid "French (Canada)"
 msgstr "フランス語（カナダ）"
 
+#: pe/ui/remote.cpp
+msgid "From {0}"
+msgstr "{0}から"
+
 #. The app can read every folder of the console.
 #: pe/ui/browse.cpp
 msgid "Full filesystem"
 msgstr "すべてのフォルダー"
 
-#: pe/ui/settings.cpp
+#. A choice of 'ASTC textures': the textures are kept uncompressed (more memory). Keep it short.
+#: settings_store.h
+msgid "Full quality"
+msgstr "フル品質"
+
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "Game audio; PS5 system-menu music is unchanged."
 msgstr "ゲームの音量です。PS5のシステムメニューの音楽は変わりません。"
 
@@ -532,10 +657,6 @@ msgstr "ゲームの音量です。PS5のシステムメニューの音楽は変
 #: eden_services.cpp, host/fake_services.cpp
 msgid "Game could not start: {0} Details: {1}"
 msgstr "ゲームを起動できませんでした：{0} 詳細：{1}"
-
-#: pe/ui/home.cpp
-msgid "Game details"
-msgstr "ゲームの詳細"
 
 #: pe/ui/library.cpp
 msgid "GAME DETAILS"
@@ -545,20 +666,12 @@ msgstr "ゲームの詳細"
 msgid "Game files"
 msgstr "ゲームファイル"
 
-#: pe/ui/settings.cpp
-msgid "GAME FILES"
-msgstr "ゲームファイル"
-
-#: pe/ui/library.cpp
+#: pe/ui/home.cpp, pe/ui/library.cpp
 msgid "Game settings"
 msgstr "ゲーム設定"
 
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "Game volume"
-msgstr "ゲーム音量"
-
-#: pe/ui/settings.cpp
-msgid "GAME VOLUME"
 msgstr "ゲーム音量"
 
 #: pe/ui/settings.cpp
@@ -568,6 +681,10 @@ msgstr "ゲームの音量と、このメニューの効果音。"
 #: pe/ui/browse.cpp
 msgid "GAMES"
 msgstr "ゲーム"
+
+#: pe/ui/remote.cpp, pe/ui/settings.cpp
+msgid "Games on your network, downloaded when you play them."
+msgstr "ネットワーク上のゲームを、プレイするときにダウンロードします。"
 
 #: pe/ui/browse.cpp
 msgid "Games use this language when they offer it, and their own default otherwise. It applies when a game starts."
@@ -585,6 +702,10 @@ msgstr "ドイツ語"
 msgid "GETTING STARTED"
 msgstr "はじめに"
 
+#: pe/ui/multiplayer.cpp
+msgid "Go offline"
+msgstr "オフラインにする"
+
 #: pe/ui/settings.cpp
 msgid "Graphics backend and how games are scaled to your TV."
 msgstr "グラフィックスの方式と、テレビへの拡大方法。"
@@ -594,20 +715,21 @@ msgid "Graphics backend initialization failed. Try another backend in Settings; 
 msgstr "グラフィックスの初期化に失敗しました。設定で別の方式を試してください。ドライバーの詳細は stderr.log と eden_log.txt にあります。"
 
 #. Console mode: the console as if held in the hands. Keep it short (about 9 letters).
-#: pe/ui/library.cpp
+#: pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/shell.cpp
 msgid "Handheld"
 msgstr "携帯モード"
-
-#: pe/ui/settings.cpp
-msgid "HIGH CONTRAST"
-msgstr "ハイコントラスト"
 
 #. A switch: solid dark panels, brighter text.
 #: pe/ui/settings.cpp
 msgid "High contrast"
 msgstr "ハイコントラスト"
 
-#: pe/ui/settings.cpp
+#. The menu's first section, its opening screen (not a house, and not the PS5's own home screen).
+#: pe/ui/shell.cpp
+msgid "Home"
+msgstr "ホーム"
+
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "How games are drawn and scaled to your TV."
 msgstr "ゲームの描画方法と、テレビへの拡大方法。"
 
@@ -629,9 +751,29 @@ msgid "Imported. The save it replaced was backed up."
 msgstr "インポートしました。置き換えたセーブデータはバックアップされています。"
 
 #. Tag on the language or folder that is in use now.
-#: pe/ui/browse.cpp, pe/ui/settings.cpp
+#: pe/ui/browse.cpp
 msgid "IN USE"
 msgstr "使用中"
+
+#: pe/ui/multiplayer.cpp
+msgid "Incompatible"
+msgstr "非対応"
+
+#: pe/ui/save_sync.cpp
+msgid "It goes to the server."
+msgstr "サーバーに送信されます。"
+
+#: pe/ui/save_sync.cpp
+msgid "It is tried again when the menu opens next."
+msgstr "次にメニューを開いたときに再試行します。"
+
+#: pe/ui/save_sync.cpp
+msgid "It replaces this console's."
+msgstr "この本体のデータを置き換えます。"
+
+#: pe/ui/pairing.cpp
+msgid "It was declined on the server."
+msgstr "サーバー側で拒否されました。"
 
 #: settings_store.h
 msgid "Italian"
@@ -645,10 +787,30 @@ msgstr "日本"
 msgid "Japanese"
 msgstr "日本語"
 
+#: pe/ui/multiplayer.cpp
+msgid "Join a room before launching a game, then choose Local Wireless in the game."
+msgstr "ゲームを起動する前にルームに参加し、ゲーム内でローカル通信を選んでください。"
+
+#: pe/ui/launcher.cpp
+msgid "Join a room successfully or leave it before starting a game."
+msgstr "ゲームを始める前に、ルームに参加するか退出してください。"
+
+#: pe/ui/multiplayer.cpp
+msgid "Join room"
+msgstr "ルームに参加"
+
 #. keys, firmware and roms are folder names (unchanged). TRIANGLE is the controller's triangle button, in capitals.
 #: pe/ui/browse.cpp
 msgid "Keep keys, firmware and roms folders together. TRIANGLE uses the folder shown."
 msgstr "keys、firmware、roms の各フォルダーは同じ場所に置いてください。△ボタンで表示中のフォルダーを使います。"
+
+#: pe/ui/save_sync.cpp
+msgid "Keep this console's"
+msgstr "この本体のデータを残す"
+
+#: pe/ui/settings.cpp
+msgid "Keeps the last line before a crash, but games stutter. From the next start."
+msgstr "クラッシュ直前の最後の行が残りますが、ゲームがカクつきます。次回の起動から有効です。"
 
 #: pe/ui/settings.cpp
 msgid "Keeps what a game reads back from the GPU exact. Off is faster, and some effects break."
@@ -671,21 +833,13 @@ msgstr "韓国"
 msgid "Korean"
 msgstr "韓国語"
 
-#: pe/ui/browse.cpp, pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/settings.cpp
+#: pe/ui/browse.cpp, pe/ui/game_options.cpp, pe/ui/home.cpp, pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "Language"
-msgstr "言語"
-
-#: pe/ui/library.cpp, pe/ui/settings.cpp
-msgid "LANGUAGE"
 msgstr "言語"
 
 #: pe/ui/browse.cpp
 msgid "LANGUAGES"
 msgstr "言語"
-
-#: pe/ui/settings.cpp
-msgid "LARGER TEXT"
-msgstr "文字を大きく"
 
 #. A switch: the menu's small text is drawn larger.
 #: pe/ui/settings.cpp
@@ -697,9 +851,29 @@ msgstr "文字を大きく"
 msgid "Last game opened"
 msgstr "最後に開いたゲーム"
 
-#: pe/ui/home.cpp
-msgid "Launch game"
-msgstr "ゲームを起動"
+#: pe/ui/multiplayer.cpp
+msgid "Leave / cancel"
+msgstr "退出 / キャンセル"
+
+#: pe/ui/multiplayer.cpp
+msgid "Leave room"
+msgstr "ルームから退出"
+
+#: pe/ui/multiplayer.cpp
+msgid "Leave the room before changing connection details."
+msgstr "接続情報を変更する前にルームから退出してください。"
+
+#: pe/ui/profiles.cpp
+msgid "Leaving the room. Select the profile again when disconnected."
+msgstr "ルームから退出しています。切断後にもう一度プロフィールを選んでください。"
+
+#: pe/ui/multiplayer.cpp
+msgid "Leaving..."
+msgstr "退出しています..."
+
+#: pe/ui/game_options.cpp
+msgid "Left Joy-Con"
+msgstr "Joy-Con (L)"
 
 #. Pressing the left stick down like a button.
 #: pe/ui/game_options.cpp
@@ -714,22 +888,21 @@ msgstr "浮動小数点演算の精度を下げます。速くなりますが、
 msgid "Less exact memory transfers to the GPU: faster, and a few games show wrong graphics."
 msgstr "GPUへのメモリ転送の精度を下げます。速くなりますが、一部のゲームで表示が乱れます。"
 
-#: pe/ui/home.cpp
+#: pe/ui/library.cpp, pe/ui/shell.cpp
 msgid "Library"
 msgstr "ライブラリ"
 
-#: pe/ui/library.cpp
-msgid "LIBRARY"
-msgstr "ライブラリ"
+#: pe/ui/pairing.cpp
+msgid "Linked"
+msgstr "ペアリング済み"
+
+#: pe/ui/multiplayer.cpp
+msgid "Loading public rooms..."
+msgstr "公開ルームを読み込んでいます..."
 
 #: pe/ui/settings.cpp
 msgid "Lowest GPU accuracy: faster in demanding games, and graphics can be wrong."
 msgstr "GPU精度を最低にします。重いゲームで速くなりますが、表示が乱れることがあります。"
-
-#. Headline of the Settings screen.
-#: pe/ui/settings.cpp
-msgid "Make it yours."
-msgstr "あなた好みに。"
 
 #: pe/ui/settings.cpp
 msgid "Make the menu easier to see and follow."
@@ -738,10 +911,6 @@ msgstr "メニューを見やすく、わかりやすくします。"
 #: pe/ui/browse.cpp
 msgid "Menu sound effects made with ElevenLabs."
 msgstr "メニューの効果音はElevenLabsで制作しました。"
-
-#: pe/ui/settings.cpp
-msgid "MENU SOUNDS"
-msgstr "メニュー音"
 
 #: pe/ui/settings.cpp
 msgid "Menu sounds"
@@ -761,12 +930,16 @@ msgstr "MOD"
 msgid "Mods"
 msgstr "MOD"
 
+#: pe/ui/home.cpp, pe/ui/multiplayer.cpp, pe/ui/shell.cpp
+msgid "Multiplayer"
+msgstr "マルチプレイ"
+
+#: pe/ui/multiplayer.cpp
+msgid "MULTIPLAYER"
+msgstr "マルチプレイ"
+
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "Mute"
-msgstr "ミュート"
-
-#: pe/ui/settings.cpp
-msgid "MUTE"
 msgstr "ミュート"
 
 #: pe/ui/settings.cpp
@@ -774,7 +947,7 @@ msgid "Muted"
 msgstr "ミュート中"
 
 #. Button hint: move the highlight.
-#: pe/ui/home.cpp, pe/ui/update.cpp
+#: pe/ui/update.cpp
 msgid "Navigate"
 msgstr "移動"
 
@@ -783,7 +956,7 @@ msgstr "移動"
 msgid "Nearest"
 msgstr "ニアレスト"
 
-#: pe/ui/settings.cpp
+#: pe/ui/pairing.cpp, pe/ui/settings.cpp
 msgid "Needs attention"
 msgstr "要確認"
 
@@ -796,14 +969,21 @@ msgstr "新しいプロフィール"
 msgid "Next launch: {0}"
 msgstr "次回の起動：{0}"
 
-#. Label: the folder used the next time the app starts.
-#: pe/ui/settings.cpp
-msgid "NEXT START"
-msgstr "次回の起動"
+#: pe/ui/multiplayer.cpp
+msgid "Nickname"
+msgstr "ニックネーム"
 
-#: pe/ui/library.cpp
-msgid "No cover art"
-msgstr "カバー画像なし"
+#: pe/ui/multiplayer.cpp
+msgid "Nickname: {0}"
+msgstr "ニックネーム: {0}"
+
+#: pe/ui/remote.cpp
+msgid "No download source is set up. Save a file named {0} that lists your sources, as this one does with a RomM server, then open this menu again. Downloads need an FTP server running on the console, on port {1}."
+msgstr "ダウンロード元が設定されていません。この例（RomMサーバー）のようにダウンロード元を記載した{0}という名前のファイルを保存し、このメニューを開き直してください。ダウンロードには、本体のポート{1}でFTPサーバーが動作している必要があります。"
+
+#: pe/ui/remote.cpp
+msgid "No downloads. In the Library, Square puts a game from a source in the queue."
+msgstr "ダウンロードはありません。ライブラリでシカクを押すと、ダウンロード元のゲームを待機列に追加します。"
 
 #: pe/ui/browse.cpp
 msgid "No firmware folder"
@@ -827,6 +1007,10 @@ msgstr "MODなし"
 msgid "No mods for this game yet. Copy each mod's folder to {0}, next to roms/."
 msgstr "このゲームのMODはまだありません。各MODのフォルダーを roms/ の隣の {0} にコピーしてください。"
 
+#: pe/ui/multiplayer.cpp
+msgid "No public rooms are available."
+msgstr "利用できる公開ルームはありません。"
+
 #: pe/ui/library.cpp
 msgid "No ROM files found."
 msgstr "ROMファイルが見つかりません。"
@@ -839,10 +1023,46 @@ msgstr "ROMが選ばれていません"
 msgid "No roms folder"
 msgstr "roms フォルダーなし"
 
+#: pe/ui/pairing.cpp
+msgid "No server to pair with: add a RomM server to sources.json, or set save-sync.json up over FTP."
+msgstr "ペアリングできるサーバーがありません。sources.jsonにRomMサーバーを追加するか、FTPでsave-sync.jsonを設定してください。"
+
+#: pe/ui/pairing.cpp
+msgid "Nobody approved the code in time."
+msgstr "時間内にコードが承認されませんでした。"
+
 #. No add-ons (updates or DLC).
 #: pe/ui/library.cpp
 msgid "None"
 msgstr "なし"
+
+#: pe/ui/remote.cpp
+msgid "Not connected yet"
+msgstr "未接続"
+
+#: pe/ui/pairing.cpp
+msgid "Not linked"
+msgstr "未ペアリング"
+
+#: pe/ui/pairing.cpp
+msgid "Not linked: its save data stays on the console"
+msgstr "未ペアリング：セーブデータは本体に残ります"
+
+#: pe/ui/library.cpp
+msgid "Not on the console"
+msgstr "本体にありません"
+
+#: pe/ui/pairing.cpp
+msgid "Not paired"
+msgstr "ペアリングされていません"
+
+#: pe/ui/remote.cpp
+msgid "Not reachable"
+msgstr "接続できません"
+
+#: pe/ui/settings.cpp
+msgid "Not set up"
+msgstr "未設定"
 
 #. Short status at the right of the Save data row.
 #: pe/ui/library.cpp
@@ -854,14 +1074,14 @@ msgstr "インポートするものがありません"
 msgid "Off"
 msgstr "オフ"
 
+#: pe/ui/multiplayer.cpp
+msgid "Offline"
+msgstr "オフライン"
+
 #. A setting that is switched on.
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "On"
 msgstr "オン"
-
-#: pe/ui/settings.cpp
-msgid "ON THIS CONSOLE"
-msgstr "この本体"
 
 #. Short tag on a folder row.
 #: pe/ui/browse.cpp
@@ -869,7 +1089,7 @@ msgid "OPEN"
 msgstr "開く"
 
 #. Button hint: open the highlighted folder.
-#: pe/ui/browse.cpp, pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/settings.cpp
+#: pe/ui/browse.cpp, pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "Open"
 msgstr "開く"
 
@@ -886,24 +1106,47 @@ msgstr "ライブラリを開く"
 msgid "Options"
 msgstr "OPTIONS"
 
-#. Label: see 'Output resolution'.
-#: pe/ui/settings.cpp
-msgid "OUTPUT RESOLUTION"
-msgstr "出力解像度"
-
 #. Setting: the size of the picture sent to the TV (1080p, 1440p or 2160p). Not the same as 'Resolution', which scales the game's own picture (1x, 2x...).
 #: pe/ui/settings.cpp
 msgid "Output resolution"
 msgstr "出力解像度"
 
 #. Button hint: jump a page of the list (L1 / R1).
-#: pe/ui/browse.cpp, pe/ui/update.cpp
+#: pe/ui/browse.cpp, pe/ui/multiplayer.cpp, pe/ui/update.cpp
 msgid "Page"
 msgstr "ページ"
+
+#: pe/ui/pairing.cpp
+msgid "Pair"
+msgstr "ペアリング"
+
+#: pe/ui/pairing.cpp
+msgid "Pair again"
+msgstr "再ペアリング"
+
+#: pe/ui/pairing.cpp
+msgid "Pair {0}"
+msgstr "{0}をペアリング"
+
+#: pe/ui/pairing.cpp
+msgid "Pair {0} with"
+msgstr "{0}のペアリング先"
+
+#: pe/ui/pairing.cpp
+msgid "Paired"
+msgstr "ペアリング完了"
+
+#: pe/ui/pairing.cpp
+msgid "Paired. The profile's save data syncs from now on."
+msgstr "ペアリングしました。今後、このプロフィールのセーブデータは同期されます。"
 
 #: pe/ui/browse.cpp
 msgid "Parent folder"
 msgstr "上のフォルダー"
+
+#: pe/ui/multiplayer.cpp
+msgid "Password"
+msgstr "パスワード"
 
 #. What a mod is made of: a change to the game's program (not a game update).
 #: eden_services.cpp, host/fake_services.cpp
@@ -911,24 +1154,37 @@ msgid "Patch"
 msgstr "パッチ"
 
 #. A settings category: options that make games run faster, at some cost in accuracy.
-#: pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/settings.cpp
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "Performance"
 msgstr "パフォーマンス"
 
-#: pe/ui/settings.cpp
-msgid "PERFORMANCE"
-msgstr "パフォーマンス"
+#. Button and button hint: start the game shown. Keep it to one short word.
+#: pe/ui/home.cpp, pe/ui/library.cpp
+msgid "Play"
+msgstr "プレイ"
+
+#: pe/ui/save_sync.cpp
+msgid "Play anyway"
+msgstr "このままプレイ"
 
 #: pe/ui/profiles.cpp
 msgid "Play as"
 msgstr "これでプレイ"
 
-#: pe/ui/profiles.cpp
-msgid "Playing"
+#: pe/ui/library.cpp
+msgid "Play when downloaded"
+msgstr "ダウンロード後にプレイ"
+
+#: pe/ui/save_sync.cpp
+msgid "Play with this console's; you are asked again next time."
+msgstr "この本体のデータでプレイします。次回もう一度確認します。"
+
+#: pe/ui/pairing.cpp
+msgid "playing"
 msgstr "プレイ中"
 
-#: pe/ui/settings.cpp
-msgid "PLAYING"
+#: pe/ui/profiles.cpp
+msgid "Playing"
 msgstr "プレイ中"
 
 #: pe/ui/profiles.cpp
@@ -952,19 +1208,27 @@ msgstr "ポルトガル語（ブラジル）"
 msgid "Powered by Eden"
 msgstr "Powered by Eden"
 
-#: pe/ui/settings.cpp
-msgid "PREFERENCES"
-msgstr "環境設定"
-
 #. Update dialog headline while the download starts.
-#: pe/ui/update.cpp
+#: pe/ui/remote.cpp, pe/ui/update.cpp
 msgid "Preparing"
 msgstr "準備中"
+
+#: pe/ui/library.cpp
+msgid "Press again to delete the game and its updates and DLC from the console. Save data and settings are kept."
+msgstr "もう一度押すと、ゲームとそのアップデート、DLCを本体から削除します。セーブデータと設定は残ります。"
 
 #. Asked before a save is imported over the one in use.
 #: pe/ui/library.cpp
 msgid "Press again to replace this game's save. The current one is backed up."
 msgstr "もう一度押すと、このゲームのセーブデータを置き換えます。現在のデータはバックアップされます。"
+
+#: pe/ui/multiplayer.cpp
+msgid "Private room"
+msgstr "プライベートルーム"
+
+#: pe/ui/game_options.cpp
+msgid "Pro Controller"
+msgstr "Proコントローラー"
 
 #: eden_services.cpp
 msgid "prod.keys could not supply an NCA header key. Replace it with a valid key dump."
@@ -978,12 +1242,12 @@ msgstr "prod.keys あり"
 msgid "prod.keys missing"
 msgstr "prod.keys なし"
 
+#: pe/ui/save_sync.cpp
+msgid "Profile {0}"
+msgstr "プロフィール {0}"
+
 #: pe/ui/profiles.cpp, pe/ui/settings.cpp
 msgid "Profiles"
-msgstr "プロフィール"
-
-#: pe/ui/settings.cpp
-msgid "PROFILES"
 msgstr "プロフィール"
 
 #: pe/ui/browse.cpp
@@ -997,6 +1261,10 @@ msgstr "ProsperoEdenを終了します。"
 #: pe/ui/update.cpp
 msgid "ProsperoEden closes to finish the update."
 msgstr "アップデートを完了するためProsperoEdenを終了します。"
+
+#: eden_services.cpp
+msgid "ProsperoEden could not get access to the console's storage, so it cannot read your settings, saves and games. Nothing was changed. Close ProsperoEden and open it again. (Code {0})"
+msgstr "ProsperoEden は本体のストレージにアクセスできなかったため、設定、セーブデータ、ゲームを読み込めません。何も変更されていません。ProsperoEden を終了して、もう一度開いてください。（コード {0}）"
 
 #: pe/ui/browse.cpp
 msgid "ProsperoEden is an unofficial PS5 port brought to you by BlackBearReloaded."
@@ -1020,19 +1288,39 @@ msgstr "PS5コントローラーの初期化に失敗しました"
 msgid "PS5 EDITION"
 msgstr "PS5エディション"
 
-#. {0} is the version, for example v1.000.030.
-#: pe/ui/home.cpp
-msgid "PS5 EDITION  /  {0}"
-msgstr "PS5エディション  /  {0}"
+#: pe/ui/multiplayer.cpp
+msgid "Public rooms"
+msgstr "公開ルーム"
+
+#: pe/ui/remote.cpp
+msgid "Queued"
+msgstr "待機中"
+
+#: pe/ui/remote.cpp
+msgid "Queued, from {0}"
+msgstr "待機中、{0}から"
+
+#. The usual value of RNG seed: no fixed seed, a new random one at every start of the game.
+#: pe/ui/game_options.cpp
+msgid "Random"
+msgstr "ランダム"
 
 #. A switch, on by default: what a game reads back from the graphics processor is kept exact. Keep the term the language's emulator players use, or translate it plainly.
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "Reactive flushing"
 msgstr "リアクティブフラッシュ"
 
-#: pe/ui/settings.cpp
-msgid "REACTIVE FLUSHING"
-msgstr "リアクティブフラッシュ"
+#: pe/ui/remote.cpp
+msgid "Read the lists again"
+msgstr "リストを再読み込み"
+
+#: pe/ui/remote.cpp
+msgid "Reading the game lists..."
+msgstr "ゲームリストを読み込んでいます..."
+
+#: pe/ui/library.cpp, pe/ui/remote.cpp
+msgid "Reading..."
+msgstr "読み込み中..."
 
 #: pe/ui/settings.cpp
 msgid "Ready"
@@ -1042,26 +1330,21 @@ msgstr "準備完了"
 msgid "RECENTLY PLAYED"
 msgstr "最近プレイしたゲーム"
 
-#: pe/ui/settings.cpp
-msgid "REDUCE MOTION"
-msgstr "動きを減らす"
-
 #. A switch: no drifting, sliding or zooming on screen.
 #: pe/ui/settings.cpp
 msgid "Reduce motion"
 msgstr "動きを減らす"
+
+#: pe/ui/multiplayer.cpp
+msgid "Refresh"
+msgstr "更新"
 
 #. Setting: how many times a second the TV picture is refreshed while a game runs (60 or 120 Hz).
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "Refresh rate"
 msgstr "リフレッシュレート"
 
-#. Label: see 'Refresh rate'.
-#: pe/ui/settings.cpp
-msgid "REFRESH RATE"
-msgstr "リフレッシュレート"
-
-#: pe/ui/browse.cpp, pe/ui/settings.cpp
+#: pe/ui/browse.cpp
 msgid "REGION"
 msgstr "地域"
 
@@ -1077,10 +1360,6 @@ msgstr "名前変更"
 msgid "Renderer"
 msgstr "レンダラー"
 
-#: pe/ui/settings.cpp
-msgid "RENDERER"
-msgstr "レンダラー"
-
 #: pe/ui/game_options.cpp
 msgid "Reset"
 msgstr "リセット"
@@ -1089,17 +1368,30 @@ msgstr "リセット"
 msgid "Resolution"
 msgstr "解像度"
 
-#: pe/ui/settings.cpp
-msgid "RESOLUTION"
-msgstr "解像度"
+#: pe/ui/game_options.cpp
+msgid "Right Joy-Con"
+msgstr "Joy-Con (R)"
 
 #: pe/ui/game_options.cpp
 msgid "Right stick press"
 msgstr "右スティック押し込み"
 
+#. A game setting. RNG is a random number generator and the seed is the number it starts from. A game with a seed is loaded at the same place in memory at every start, which some mods need. Keep it short; RNG and seed may stay in English where players say them so.
+#: pe/ui/game_options.cpp
+msgid "RNG seed"
+msgstr "乱数シード"
+
 #: eden_services.cpp, pe/ui/launcher.cpp
 msgid "ROM missing from the game files folder"
 msgstr "ゲームファイルのフォルダーにROMがありません"
+
+#: pe/ui/multiplayer.cpp
+msgid "Room address"
+msgstr "ルームのアドレス"
+
+#: pe/ui/multiplayer.cpp
+msgid "Room {0} of {1}"
+msgstr "ルーム {0} / {1}"
 
 #: settings_store.h
 msgid "Russian"
@@ -1120,14 +1412,58 @@ msgstr "サンドボックス（コード {0}）：アプリのフォルダー�
 msgid "Save data"
 msgstr "セーブデータ"
 
+#: pe/ui/save_sync.cpp
+msgid "Save data backed up"
+msgstr "セーブデータをバックアップしました"
+
+#: pe/ui/save_sync.cpp
+msgid "Save data changed on both sides"
+msgstr "セーブデータが両方で変更されています"
+
+#: pe/ui/save_sync.cpp
+msgid "Save data from the server"
+msgstr "サーバーのセーブデータを取得しました"
+
+#: pe/ui/save_sync.cpp
+msgid "Save data left as it was"
+msgstr "セーブデータは変更していません"
+
+#: pe/ui/save_sync.cpp
+msgid "Save data not backed up"
+msgstr "セーブデータはバックアップされていません"
+
+#: pe/ui/save_sync.cpp
+msgid "Save data not synced"
+msgstr "セーブデータは同期されていません"
+
 #. Short status at the right of the Save data row: a folder with a save to import.
 #: pe/ui/library.cpp
 msgid "Save folder found"
 msgstr "セーブフォルダーあり"
 
+#: pe/ui/pairing.cpp, pe/ui/settings.cpp
+msgid "Save sync"
+msgstr "セーブデータの同期"
+
+#: pe/ui/pairing.cpp
+msgid "save-sync.json cannot be read ({0}). Nothing syncs until it is corrected over FTP."
+msgstr "save-sync.jsonを読み込めません（{0}）。FTPで修正するまで同期されません。"
+
+#: pe/ui/pairing.cpp
+msgid "save-sync.json cannot be read: correct it over FTP first."
+msgstr "save-sync.jsonを読み込めません。先にFTPで修正してください。"
+
 #: pe/ui/game_options.cpp, pe/ui/library.cpp
 msgid "Saved for this game. Applies on next launch."
 msgstr "このゲーム用に保存しました。次回の起動から適用されます。"
+
+#: pe/ui/save_sync.cpp
+msgid "Saved {0}. It goes to the server."
+msgstr "保存日時：{0}。サーバーに送信されます。"
+
+#: pe/ui/save_sync.cpp
+msgid "Saved {0}. It replaces this console's."
+msgstr "保存日時：{0}。この本体のデータを置き換えます。"
 
 #. Shown after choosing 120 Hz.
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
@@ -1138,31 +1474,33 @@ msgstr "保存しました。120 Hzに対応していないディスプレイで
 msgid "Saved. Applies when a game starts."
 msgstr "保存しました。ゲームの起動時に適用されます。"
 
+#. Shown after choosing 'Full quality' for 'ASTC textures'. 1x is a resolution scale (unchanged). It has two lines: keep it short.
+#: pe/ui/game_options.cpp, pe/ui/settings.cpp
+msgid "Saved. Full quality uses four times the graphics memory for these textures and can run out above 1x."
+msgstr "保存しました。フル品質ではこれらのテクスチャに4倍のグラフィックスメモリを使い、1xを超えると不足することがあります。"
+
 #: pe/ui/browse.cpp
 msgid "Saved. Reopen ProsperoEden to use this folder."
 msgstr "保存しました。ProsperoEdenを開き直すと、このフォルダーが使われます。"
+
+#: pe/ui/pairing.cpp
+msgid "Scan the code with your phone, or open the address below."
+msgstr "スマートフォンでコードを読み取るか、下のアドレスを開いてください。"
 
 #. Button hint: move through a long text (Up/Down).
 #: pe/ui/update.cpp
 msgid "Scroll"
 msgstr "スクロール"
 
+#. Button hint beside L1 and R1: they move between the menu's sections (Home, Library, Multiplayer, Settings, About).
+#: pe/ui/browse.cpp, pe/ui/home.cpp, pe/ui/library.cpp, pe/ui/multiplayer.cpp, pe/ui/settings.cpp
+msgid "Sections"
+msgstr "セクション"
+
 #. Button hint: choose the highlighted item (not the Select button).
-#: pe/ui/game_options.cpp, pe/ui/home.cpp, pe/ui/library.cpp, pe/ui/settings.cpp, pe/ui/update.cpp
+#: pe/ui/game_options.cpp, pe/ui/home.cpp, pe/ui/library.cpp, pe/ui/multiplayer.cpp, pe/ui/pairing.cpp, pe/ui/remote.cpp, pe/ui/save_sync.cpp, pe/ui/settings.cpp, pe/ui/update.cpp
 msgid "Select"
 msgstr "決定"
-
-#: pe/ui/library.cpp
-msgid "Select a game"
-msgstr "ゲームを選ぶ"
-
-#: pe/ui/library.cpp
-msgid "Select a game to begin"
-msgstr "ゲームを選んで始めましょう"
-
-#: pe/ui/library.cpp
-msgid "Select a readable game to configure its mode."
-msgstr "モードを設定するには、読み込めるゲームを選んでください。"
 
 #. Heading: the language highlighted in the list.
 #: pe/ui/browse.cpp
@@ -1174,14 +1512,13 @@ msgstr "選択中"
 msgid "Selected ROM is no longer available"
 msgstr "選んだROMはもうありません"
 
-#: pe/ui/home.cpp, pe/ui/settings.cpp
+#: pe/ui/save_sync.cpp
+msgid "Server too old for save sync"
+msgstr "サーバーが古く、同期に対応していません"
+
+#: pe/ui/home.cpp, pe/ui/settings.cpp, pe/ui/shell.cpp
 msgid "Settings"
 msgstr "設定"
-
-#. Label: whether keys and firmware are in place.
-#: pe/ui/settings.cpp
-msgid "SETUP"
-msgstr "セットアップ"
 
 #: eden_services.cpp, host/fake_services.cpp
 msgid "Setup required"
@@ -1199,13 +1536,25 @@ msgstr "セットアップの状態と詳細ログ。"
 msgid "Setup validation failed. Check that firmware and key files are readable and valid."
 msgstr "セットアップを検証できませんでした。ファームウェアとキーのファイルが読み込めて正しいか確認してください。"
 
+#: pe/ui/pairing.cpp
+msgid "Several servers can keep the save data. Which one should this profile use?"
+msgstr "セーブデータを保存できるサーバーが複数あります。このプロフィールではどれを使いますか？"
+
+#: pe/ui/remote.cpp
+msgid "Several sources have this game. Which one should it come from?"
+msgstr "このゲームは複数のダウンロード元にあります。どこからダウンロードしますか？"
+
 #: pe/ui/settings.cpp
 msgid "Show or hide the FPS overlay"
 msgstr "FPS表示の表示／非表示"
 
-#: pe/ui/library.cpp
-msgid "SIZE"
-msgstr "サイズ"
+#: pe/ui/multiplayer.cpp
+msgid "Showing the previous list."
+msgstr "前回のリストを表示しています。"
+
+#: pe/ui/pairing.cpp
+msgid "Sign in to {0} as the user this profile's save data belongs to."
+msgstr "このプロフィールのセーブデータを持つユーザーとして{0}にサインインしてください。"
 
 #. Button and hint: not now (the dialog shows again the next time the app opens).
 #: pe/ui/update.cpp
@@ -1215,10 +1564,6 @@ msgstr "スキップ"
 #. A switch: fewer checks when a game changes memory the graphics processor uses. CPU stays.
 #: pe/ui/game_options.cpp, pe/ui/settings.cpp
 msgid "Skip CPU invalidation"
-msgstr "CPU無効化をスキップ"
-
-#: pe/ui/settings.cpp
-msgid "SKIP CPU INVALIDATION"
 msgstr "CPU無効化をスキップ"
 
 #: pe/ui/settings.cpp
@@ -1246,6 +1591,10 @@ msgstr "シカク"
 msgid "Square again takes {0} off the list. Its save data stays on the console."
 msgstr "もう一度シカクで{0}をリストから外します。セーブデータは本体に残ります。"
 
+#: pe/ui/pairing.cpp
+msgid "Square again unlinks {0}. Its save data stays on the console and on the server."
+msgstr "もう一度シカクで{0}のペアリングを解除します。セーブデータは本体とサーバーに残ります。"
+
 #. The app creates its user the first time a game runs.
 #: eden_services.cpp
 msgid "Start any game once before importing a save."
@@ -1264,9 +1613,26 @@ msgstr "背景の動きと画面のスライドを止めます。ロード画面
 msgid "Supply your own files"
 msgstr "ファイルはご自身で用意してください"
 
+#: pe/ui/save_sync.cpp
+msgid "Sync the save data once more."
+msgstr "セーブデータをもう一度同期します。"
+
+#: pe/ui/save_sync.cpp
+msgid "Syncing save data"
+msgstr "セーブデータを同期中"
+
+#. A category of a game's settings: how the emulated console itself behaves.
+#: pe/ui/library.cpp
+msgid "System"
+msgstr "システム"
+
 #: eden_services.cpp
 msgid "Taiwan"
 msgstr "台湾"
+
+#: pe/ui/save_sync.cpp
+msgid "Take the server's"
+msgstr "サーバーのデータを使う"
 
 #: pe/ui/profiles.cpp
 msgid "Taken off the list. Its save data stays on the console."
@@ -1285,31 +1651,101 @@ msgstr "謝辞"
 msgid "Thanks to the whole PS5 homebrew community and to every developer whose drivers, tools and libraries make ProsperoEden possible."
 msgstr "PS5ホームブリューコミュニティのみなさんと、ProsperoEdenを支えるドライバー、ツール、ライブラリの開発者のみなさんに感謝します。"
 
+#: pe/ui/remote.cpp
+msgid "The download stopped"
+msgstr "ダウンロードが停止しました"
+
 #: pe/ui/settings.cpp
 msgid "The folder that holds your keys, firmware and games."
 msgstr "キー、ファームウェア、ゲームが入ったフォルダー。"
+
+#: pe/ui/save_sync.cpp
+msgid "The game does not start."
+msgstr "ゲームは起動しません。"
+
+#: pe/ui/remote.cpp
+msgid "The game list of {0} could not be read."
+msgstr "{0}のゲームリストを読み込めませんでした。"
+
+#: pe/ui/remote.cpp
+msgid "The game lists are read: {0} game."
+msgstr "ゲームリストを読み込みました：{0}本。"
+
+#: pe/ui/remote.cpp
+msgid "The game lists are read: {0} games."
+msgstr "ゲームリストを読み込みました：{0}本。"
 
 #. Why a game stopped. 'Settings, Video' is the menu path; 'the game's own settings' is the Game settings dialog of the Library.
 #: eden_services.cpp
 msgid "The game ran out of graphics memory. Lower the resolution in Settings, Video (or in the game's own settings) and start it again."
 msgstr "ゲームのグラフィックスメモリが不足しました。設定の「ビデオ」（またはゲームごとの設定）で解像度を下げて、もう一度起動してください。"
 
-#: pe/ui/settings.cpp
+#: pe/ui/save_sync.cpp
+msgid "The game starts when its save data is in step."
+msgstr "セーブデータの同期が済むとゲームが始まります。"
+
+#: pe/ui/remote.cpp
+msgid "The game starts when the download is done."
+msgstr "ダウンロードが完了するとゲームが始まります。"
+
+#: pe/ui/game_options.cpp, pe/ui/multiplayer.cpp
+msgid "The keyboard could not be opened."
+msgstr "キーボードを開けませんでした。"
+
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "The language games use when they offer it."
 msgstr "対応しているゲームで使う言語。"
+
+#. Under the title Theme: what a theme changes.
+#: pe/ui/settings.cpp
+msgid "The look of this menu."
+msgstr "このメニューの外観。"
+
+#: pe/ui/pairing.cpp
+msgid "The profile or the server is no longer there."
+msgstr "プロフィールまたはサーバーがなくなっています。"
 
 #: pe/ui/profiles.cpp
 msgid "The profile that is playing stays. Choose another one first."
 msgstr "プレイ中のプロフィールは外せません。先に別のものを選んでください。"
+
+#: pe/ui/pairing.cpp
+msgid "The profile's save data syncs as {0} from now on."
+msgstr "今後、このプロフィールのセーブデータは{0}として同期されます。"
+
+#: pe/ui/pairing.cpp
+msgid "The profile's save data syncs with the server from now on."
+msgstr "今後、このプロフィールのセーブデータはサーバーと同期されます。"
 
 #. Shown at the end of release notes that were cut short; homebrew.page is a site's name and stays as it is.
 #: pe/ui/update.cpp
 msgid "The rest is on the app's page on homebrew.page."
 msgstr "続きはhomebrew.pageのアプリページにあります。"
 
+#: pe/ui/save_sync.cpp
+msgid "The server does not have {0}."
+msgstr "サーバーに{0}がありません。"
+
+#: pe/ui/save_sync.cpp
+msgid "The server runs RomM {0}; the save sync needs RomM {1} or newer. Update the server: until then no save data is synced with it."
+msgstr "サーバーはRomM {0}です。セーブデータの同期にはRomM {1}以降が必要です。サーバーをアップデートしてください。それまでセーブデータは同期されません。"
+
+#: pe/ui/remote.cpp
+msgid "The source no longer has this game."
+msgstr "ダウンロード元にこのゲームはもうありません。"
+
 #: pe/ui/update.cpp
 msgid "The update could not finish"
 msgstr "アップデートを完了できませんでした"
+
+#. A tile of Settings and its dialog's title: the look of this menu (its colours and artwork).
+#: pe/ui/settings.cpp
+msgid "Theme"
+msgstr "テーマ"
+
+#: pe/ui/save_sync.cpp
+msgid "This console and the server both have save data the other does not know. Which one should stay? The other is kept as a backup."
+msgstr "この本体とサーバーの両方に、相手側にないセーブデータがあります。どちらを残しますか？もう一方はバックアップとして保管されます。"
 
 #: pe/ui/browse.cpp
 msgid "THIS FOLDER"
@@ -1332,13 +1768,17 @@ msgstr "このゲームには、まだ書き出せるセーブデータがあり
 msgid "This game's settings cannot be saved (no title ID)."
 msgstr "このゲームの設定は保存できません（タイトルIDなし）。"
 
+#: pe/ui/multiplayer.cpp
+msgid "This room uses a different protocol version."
+msgstr "このルームは異なるプロトコルバージョンを使用しています。"
+
 #. ryujinx/, save-import/ and roms/ are folder names (unchanged); {0} is the game's ID.
 #: eden_services.cpp
 msgid "To import, copy a Ryujinx folder to ryujinx/ or a save to save-import/{0}/, next to roms/."
 msgstr "インポートするには、Ryujinxのフォルダーを ryujinx/ に、またはセーブデータを save-import/{0}/ にコピーしてください（roms/ と同じ場所）。"
 
 #. The DualSense controller's touch pad, pressed as a button. Use the name players know.
-#: pe/ui/game_options.cpp, pe/ui/settings.cpp
+#: pe/ui/game_options.cpp
 msgid "Touchpad"
 msgstr "タッチパッド"
 
@@ -1347,18 +1787,43 @@ msgstr "タッチパッド"
 msgid "Triangle"
 msgstr "サンカク"
 
-#: pe/ui/update.cpp
+#. One line about the theme named Canopy: its artwork is a tropical sunset, its panels are dark green glass, its accent colour is lime green.
+#: pe/ui/theme.cpp
+msgid "Tropical dusk, dark green glass and lime."
+msgstr "熱帯の夕暮れ、深緑のガラス、ライム色。"
+
+#: pe/ui/pairing.cpp, pe/ui/remote.cpp, pe/ui/save_sync.cpp, pe/ui/update.cpp
 msgid "Try again"
 msgstr "再試行"
+
+#: pe/ui/remote.cpp
+msgid "Trying again."
+msgstr "再試行します。"
 
 #. Button hint: switch the highlighted mod on or off.
 #: pe/ui/library.cpp
 msgid "Turn on or off"
 msgstr "オン/オフ"
 
-#: pe/ui/library.cpp
+#: pe/ui/multiplayer.cpp
+msgid "UDP port"
+msgstr "UDPポート"
+
+#: pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "Unavailable"
 msgstr "利用不可"
+
+#: pe/ui/save_sync.cpp
+msgid "Understood"
+msgstr "了解"
+
+#: pe/ui/pairing.cpp
+msgid "Unlink"
+msgstr "ペアリング解除"
+
+#: pe/ui/pairing.cpp
+msgid "Unlinked. Its save data is no longer synced."
+msgstr "ペアリングを解除しました。セーブデータは同期されなくなります。"
 
 #. Update dialog headline while the downloaded release is extracted.
 #: pe/ui/update.cpp
@@ -1397,10 +1862,6 @@ msgstr "アップデート、DLC"
 msgid "Upscaling filter"
 msgstr "拡大フィルター"
 
-#: pe/ui/settings.cpp
-msgid "UPSCALING FILTER"
-msgstr "拡大フィルター"
-
 #: eden_services.cpp
 msgid "USA"
 msgstr "アメリカ"
@@ -1433,10 +1894,6 @@ msgid "Vibration"
 msgstr "振動"
 
 #: pe/ui/settings.cpp
-msgid "VIBRATION"
-msgstr "振動"
-
-#: pe/ui/settings.cpp
 msgid "Vibration off"
 msgstr "振動 オフ"
 
@@ -1448,12 +1905,8 @@ msgstr "振動 オン"
 msgid "Vibration, button mapping and the shortcuts during a game."
 msgstr "振動、ボタン割り当て、ゲーム中のショートカット。"
 
-#: pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/settings.cpp
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "Video"
-msgstr "ビデオ"
-
-#: pe/ui/settings.cpp
-msgid "VIDEO"
 msgstr "ビデオ"
 
 #: pe/ui/home.cpp
@@ -1464,6 +1917,18 @@ msgstr "すべてのゲームを見る"
 #: pe/ui/settings.cpp
 msgid "Vulkan (recommended)"
 msgstr "Vulkan（推奨）"
+
+#: pe/ui/pairing.cpp
+msgid "Waiting for the approval  ·  the code works {0} more"
+msgstr "承認を待っています  ·  コードの有効時間は残り{0}"
+
+#: pe/ui/remote.cpp
+msgid "Waiting for {0}"
+msgstr "{0}を待機中"
+
+#: pe/ui/remote.cpp
+msgid "Waiting to download"
+msgstr "ダウンロード待機中"
 
 #. Button on the update dialog: opens the new release's notes (what changes in it). Keep it short.
 #: pe/ui/update.cpp
@@ -1479,9 +1944,29 @@ msgstr "バージョン{0}の新機能"
 msgid "Who is playing. Each profile keeps its own save data and settings."
 msgstr "誰がプレイするか。プロフィールごとにセーブデータと設定が分かれます。"
 
-#: pe/ui/library.cpp
-msgid "Your games"
-msgstr "あなたのゲーム"
+#: pe/ui/save_sync.cpp
+msgid "With this console's save data; it is not synced."
+msgstr "この本体のセーブデータを使用。同期されません。"
+
+#: pe/ui/save_sync.cpp
+msgid "With this console's save data; it is synced after the game."
+msgstr "この本体のセーブデータを使用。ゲーム終了後に同期されます。"
+
+#: pe/ui/pairing.cpp
+msgid "with {0}"
+msgstr "{0}と"
+
+#: pe/ui/settings.cpp
+msgid "Write logs at once"
+msgstr "ログをすぐに書き込む"
+
+#: pe/ui/save_sync.cpp
+msgid "You are asked again next time."
+msgstr "次回もう一度確認します。"
+
+#: pe/ui/save_sync.cpp
+msgid "You are told again at the next sync."
+msgstr "次回の同期時にもう一度お知らせします。"
 
 #. Update dialog: installing the new app version keeps the player's files.
 #: pe/ui/update.cpp
@@ -1492,6 +1977,10 @@ msgstr "ゲーム、セーブデータ、設定はそのまま残ります。"
 #: pe/ui/home.cpp
 msgid "Your next adventure"
 msgstr "次の冒険へ"
+
+#: pe/ui/save_sync.cpp
+msgid "Your save data is checked against the server's."
+msgstr "セーブデータをサーバーのものと照合しています。"
 
 #. How many settings of a kind this game has of its own; {0} is a number.
 #: pe/ui/library.cpp
@@ -1504,7 +1993,7 @@ msgid "{0} DLC"
 msgstr "DLC {0}個"
 
 #. Exactly one game. In a language with more than two plural forms, word it so that it reads well with any number (Games: {0}).
-#: pe/ui/browse.cpp
+#: pe/ui/browse.cpp, pe/ui/remote.cpp
 msgid "{0} game"
 msgstr "ゲーム {0}本"
 
@@ -1513,8 +2002,12 @@ msgstr "ゲーム {0}本"
 msgid "{0} game installed"
 msgstr "{0}本のゲームをインストール済み"
 
+#: pe/ui/remote.cpp
+msgid "{0} game lists could not be read."
+msgstr "{0}件のゲームリストを読み込めませんでした。"
+
 #. Any number of games other than one (also 0). See '{0} game'.
-#: pe/ui/browse.cpp
+#: pe/ui/browse.cpp, pe/ui/library.cpp, pe/ui/remote.cpp
 msgid "{0} games"
 msgstr "ゲーム {0}本"
 
@@ -1524,7 +2017,7 @@ msgid "{0} games installed"
 msgstr "{0}本のゲームをインストール済み"
 
 #. {0} is 60 or 120 (hertz).
-#: pe/ui/library.cpp
+#: pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "{0} Hz"
 msgstr "{0} Hz"
 
@@ -1564,12 +2057,32 @@ msgid "{0} of {1} mods on"
 msgstr "MOD {1}個中{0}個オン"
 
 #. How many of a game's mods are switched on: 2 of 3 on.
-#: pe/ui/library.cpp
+#: pe/ui/library.cpp, pe/ui/settings.cpp
 msgid "{0} of {1} on"
 msgstr "{1}個中{0}個オン"
 
+#: pe/ui/settings.cpp
+msgid "{0} of {1} profiles"
+msgstr "{1}件中{0}件のプロフィール"
+
+#: pe/ui/save_sync.cpp
+msgid "{0} on {1}"
+msgstr "{1}の{0}"
+
+#: pe/ui/multiplayer.cpp
+msgid "{0} public rooms"
+msgstr "公開ルーム {0}件"
+
+#: pe/ui/remote.cpp, pe/ui/settings.cpp
+msgid "{0} sources"
+msgstr "{0}件のダウンロード元"
+
+#: pe/ui/save_sync.cpp
+msgid "{0} · Profile {1}"
+msgstr "{0} · プロフィール {1}"
+
 #. A percentage (a volume): write it as the language does, for example with a space before the sign.
-#: pe/ui/game_options.cpp, pe/ui/settings.cpp, pe/ui/update.cpp
+#: pe/ui/game_options.cpp, pe/ui/library.cpp, pe/ui/remote.cpp, pe/ui/settings.cpp, pe/ui/update.cpp
 msgid "{0}%"
 msgstr "{0}%"
 

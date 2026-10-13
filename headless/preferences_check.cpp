@@ -1,5 +1,6 @@
 // Host check of the JSON settings store (settings_store.h) and its migration from the earlier
 // text files. Build: c++ -std=c++20 -I<nlohmann include> preferences_check.cpp && ./a.out
+#include "game_name.h"
 #include "preferences.h"
 #include <cassert>
 #include <fstream>
@@ -11,7 +12,26 @@ static std::string Read(const std::string& path) {
     return {std::istreambuf_iterator<char>(in), {}};
 }
 
+// A game's name as the Library shows it (game_name.h).
+static void CheckGameNames() {
+    assert(Eden::UsableName("Sky Shepherds") && Eden::UsableName("\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0"));
+    // Not names: nothing, blanks, a question mark, a private-use character, bytes that are not text.
+    assert(!Eden::UsableName("") && !Eden::UsableName("  ") && !Eden::UsableName("?") && !Eden::UsableName("\xef\xa3\xbf"));
+    assert(!Eden::UsableName("\x83\x51\x81\x5b\x83\x80") && !Eden::UsableName("Ember \xff Knights") &&
+           !Eden::UsableName("\xc0\xaf") && !Eden::UsableName("\xed\xa0\x80") && !Eden::UsableName("\xe2\x85"));
+    assert(!Eden::UsableName("\xef\xbf\xbd") && !Eden::UsableName("\xe3\x80\x80"));
+    // Look-alike characters become the plain letters: a sequel's Roman numeral, full-width Latin.
+    assert(Eden::PlainName("EMBER KNIGHTS \xe2\x85\xa1") == "EMBER KNIGHTS II");
+    assert(Eden::PlainName("Part \xe2\x85\xab, \xe2\x85\xb3") == "Part XII, iv");
+    assert(Eden::PlainName("\xef\xbc\xa1\xef\xbd\x82\xef\xbc\x91\xe3\x80\x80\xef\xbc\x81") == "Ab1 !");
+    assert(Eden::PlainName("  Moss & Lantern\xe2\x84\xa2 ") == "Moss & Lantern\xe2\x84\xa2");
+    assert(Eden::PlainName("\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0") == "\xe3\x82\xb2\xe3\x83\xbc\xe3\x83\xa0");
+    assert(Eden::PlainName("\x83\x51") == "\x83\x51");  // not text: left as it is
+    std::puts("Game names: text or not, and look-alike characters as plain letters PASS");
+}
+
 int main() {
+    CheckGameNames();
     char directory[] = "/tmp/eden-settings-XXXXXX";
     assert(mkdtemp(directory));
     const std::string file = std::string(directory) + "/prosperoeden.json";
@@ -26,9 +46,25 @@ int main() {
     auto saved = Eden::LoadPreferences(file);
     assert(!saved.hud && saved.volume == 40 && saved.mute && saved.detailed_logging &&
            saved.backend == Eden::GraphicsBackend::OpenGL);
+    assert(!saved.immediate_logs);
+    saved.immediate_logs = true;
+    assert(Eden::SavePreferences(saved, file) && Eden::LoadPreferences(file).immediate_logs);
     assert(!Eden::SavePreferences({true, 101, false, false}, file));
     assert(Eden::LoadPreferences(file).volume == 40);
     assert(Read(file).find("\"renderer\": \"opengl\"") != std::string::npos);
+
+    Eden::Multiplayer::Connection room{"127.0.0.1", 24872, "PlayerOne", "saved-room-password"};
+    assert(Eden::SaveRoomConnection(room, file));
+    const auto stored_room = Eden::LoadRoomConnection(file);
+    assert(stored_room.host == room.host && stored_room.port == room.port && stored_room.nickname == room.nickname);
+    assert(stored_room.password == room.password);
+    room.password.assign(129, 'x');
+    assert(!Eden::SaveRoomConnection(room, file));
+    assert(Eden::LoadRoomConnection(file).password == stored_room.password);
+    room.password.clear();
+    assert(Eden::SaveRoomConnection(room, file));
+    assert(Eden::LoadRoomConnection(file).password.empty());
+    assert(Eden::LoadPreferences(file).volume == 40);
 
     // Language: English (US) by default, saved by code, invalid values rejected or ignored.
     assert(saved.language == 0);
@@ -72,6 +108,16 @@ int main() {
     assert(video.resolution == 1 && video.upscaling_filter == 1 && video.volume == 40);
     assert(Read(file).find("\"resolution\": \"0.75x\"") != std::string::npos);
     assert(Read(file).find("\"upscaling_filter\": \"fsr\"") != std::string::npos);
+    // ASTC textures: compressed unless the file says full; nothing beyond the list is saved.
+    assert(video.astc_textures == 0);
+    assert(Read(file).find("\"astc_textures\": \"compressed\"") != std::string::npos);
+    video.astc_textures = 1;
+    assert(Eden::SavePreferences(video, file));
+    assert(Eden::LoadPreferences(file).astc_textures == 1);
+    assert(Read(file).find("\"astc_textures\": \"full\"") != std::string::npos);
+    video.astc_textures = 2;
+    assert(!Eden::SavePreferences(video, file));
+    video.astc_textures = 1;
     // The largest scale is 4x; nothing beyond the list is saved.
     video.resolution = 6;
     assert(Eden::SavePreferences(video, file) && Eden::LoadPreferences(file).resolution == 6);
@@ -110,6 +156,33 @@ int main() {
     std::ofstream(unknown_output) << R"({"video": {"output_resolution": "720p"}})";
     assert(Eden::LoadPreferences(unknown_output).output == 0);
 
+    // Frame generation (Settings > Video): off unless chosen, and a switch, so the file holds a
+    // boolean. Vulkan only, but the setting itself is stored like any other.
+    video = Eden::LoadPreferences(file);
+    assert(!video.frame_gen);
+    video.frame_gen = true;
+    assert(Eden::SavePreferences(video, file) && Eden::LoadPreferences(file).frame_gen);
+    assert(Read(file).find("\"frame_gen\": true") != std::string::npos);
+    video.frame_gen = false;
+    assert(Eden::SavePreferences(video, file) && !Eden::LoadPreferences(file).frame_gen);
+    // The target rate and the multiplier are stored as their keys, and "auto" is the default:
+    // Eden leaves the ratio in charge unless a target is asked for (settings_store.h).
+    assert(video.frame_gen_target == 0 && video.frame_gen_multiplier == 0);
+    assert(Read(file).find("\"frame_gen_target\": \"auto\"") != std::string::npos);
+    assert(Read(file).find("\"frame_gen_multiplier\": \"2\"") != std::string::npos);
+    video.frame_gen_target = 3;      // "120"
+    video.frame_gen_multiplier = 2;  // "4"
+    assert(Eden::SavePreferences(video, file));
+    assert(Eden::LoadPreferences(file).frame_gen_target == 3);
+    assert(Eden::LoadPreferences(file).frame_gen_multiplier == 2);
+    assert(Read(file).find("\"frame_gen_target\": \"120\"") != std::string::npos);
+    assert(Read(file).find("\"frame_gen_multiplier\": \"4\"") != std::string::npos);
+    assert(Eden::kFrameGenTargetHz[Eden::LoadPreferences(file).frame_gen_target] == 120);
+    assert(Eden::kFrameGenMultiplierValue[Eden::LoadPreferences(file).frame_gen_multiplier] == 4);
+    video.frame_gen_target = 0;
+    video.frame_gen_multiplier = 0;
+    assert(Eden::SavePreferences(video, file));
+
     // Vibration (Settings > Controls): on unless turned off.
     auto controls = Eden::LoadPreferences(file);
     assert(controls.vibration);
@@ -139,6 +212,18 @@ int main() {
     game = Eden::LoadGameSettings(racer, file);
     assert(game.renderer == -1 && game.resolution == 4 && game.upscaling_filter == -1);
     assert(!Eden::SaveGameSettings(0, {}, file) && !Eden::SaveGameSettings(racer, {2, -1, -1}, file));
+    // The same for the ASTC textures: a game's own choice wins over Settings (full, saved above).
+    assert(game.astc_textures == -1 && Eden::PreferencesFor(racer, file).astc_textures == 1);
+    game.astc_textures = 0;
+    assert(Eden::SaveGameSettings(racer, game, file));
+    assert(Eden::LoadGameSettings(racer, file).astc_textures == 0);
+    assert(Eden::PreferencesFor(racer, file).astc_textures == 0);
+    assert(Eden::PreferencesFor(quest, file).astc_textures == 1);
+    game.astc_textures = 2;
+    assert(!Eden::SaveGameSettings(racer, game, file));
+    game.astc_textures = -1;
+    assert(Eden::SaveGameSettings(racer, game, file));
+    assert(Read(file).find("\"astc_textures\": \"compressed\"") == std::string::npos);
     // The same for the refresh rate.
     assert(game.refresh == -1);
     assert(Eden::SaveGameSettings(racer, {-1, 4, -1, 1}, file));
@@ -146,6 +231,55 @@ int main() {
     assert(game.refresh == 1 && game.resolution == 4 && Eden::LoadGameSettings(quest, file).refresh == -1);
     assert(Eden::SaveGameSettings(racer, {-1, 4, -1, -1}, file) && Eden::LoadGameSettings(racer, file).refresh == -1);
     assert(!Eden::SaveGameSettings(racer, {-1, -1, -1, 2}, file));
+    // The same for frame generation (Library > Triangle > Video): a game's own choice, on top of
+    // Settings', reaching the session through PreferencesFor. SaveGameSettings replaces the whole
+    // record, so this reads it back, changes one field and saves it again, as the launcher does --
+    // a partial initializer here would drop the title's other settings.
+    assert(Eden::LoadGameSettings(racer, file).frame_gen == -1);
+    game = Eden::LoadGameSettings(racer, file);
+    game.frame_gen = 1;
+    assert(Eden::SaveGameSettings(racer, game, file));
+    game = Eden::LoadGameSettings(racer, file);
+    assert(game.frame_gen == 1 && game.resolution == 4 &&
+           Eden::LoadGameSettings(quest, file).frame_gen == -1);
+    assert(Eden::PreferencesFor(racer, file).frame_gen);
+    assert(!Eden::PreferencesFor(quest, file).frame_gen);
+    game.frame_gen = -1;
+    assert(Eden::SaveGameSettings(racer, game, file) &&
+           Eden::LoadGameSettings(racer, file).frame_gen == -1);
+    game.frame_gen = 2;
+    assert(!Eden::SaveGameSettings(racer, game, file));
+
+    // A game's own target rate and multiplier ride along the same path, and an index outside the
+    // tables is refused the way the boolean above is.
+    assert(Eden::LoadGameSettings(racer, file).frame_gen_target == -1);
+    assert(Eden::LoadGameSettings(racer, file).frame_gen_multiplier == -1);
+    assert(!Eden::PreferencesFor(racer, file).frame_gen_target &&
+           !Eden::PreferencesFor(racer, file).frame_gen_multiplier);
+    game = Eden::LoadGameSettings(racer, file);
+    game.frame_gen_target = 4;      // "144"
+    game.frame_gen_multiplier = 1;  // "3"
+    assert(Eden::SaveGameSettings(racer, game, file));
+    game = Eden::LoadGameSettings(racer, file);
+    assert(game.frame_gen_target == 4 && game.frame_gen_multiplier == 1);
+    assert(Read(file).find("\"frame_gen_target\": \"144\"") != std::string::npos);
+    assert(Read(file).find("\"frame_gen_multiplier\": \"3\"") != std::string::npos);
+    assert(Eden::kFrameGenTargetHz[Eden::PreferencesFor(racer, file).frame_gen_target] == 144);
+    assert(Eden::kFrameGenMultiplierValue[Eden::PreferencesFor(racer, file).frame_gen_multiplier] == 3);
+    assert(Eden::LoadGameSettings(quest, file).frame_gen_target == -1 &&
+           Eden::LoadGameSettings(quest, file).frame_gen_multiplier == -1);
+    game.frame_gen_target = -1;
+    game.frame_gen_multiplier = -1;
+    assert(Eden::SaveGameSettings(racer, game, file) &&
+           Eden::LoadGameSettings(racer, file).frame_gen_target == -1 &&
+           Eden::LoadGameSettings(racer, file).frame_gen_multiplier == -1);
+    game.frame_gen_target = 6;  // one past the last target
+    assert(!Eden::SaveGameSettings(racer, game, file));
+    game.frame_gen_target = -1;
+    game.frame_gen_multiplier = 3;  // one past the last multiplier
+    assert(!Eden::SaveGameSettings(racer, game, file));
+    game.frame_gen_multiplier = -1;
+    assert(Eden::SaveGameSettings(racer, game, file));
 
     // Performance ("performance", and one per title): the block list and the trade-offs off
     // unless chosen. A title's own values go before the general ones, one value at a time.
@@ -225,14 +359,17 @@ int main() {
         game.mute = 1;
         game.vibration = 0;
         game.language = 13;
+        game.controller = 3;  // left Joy-Con
         game.own_mapping = true;
         game.mapping = Eden::Assign(Eden::kDefaultMapping, Eden::game_a, Eden::pad_triangle);
         game.performance[2] = 1;  // fast GPU
         assert(Eden::SaveGameSettings(quest, game, file));
         const auto back = Eden::LoadGameSettings(quest, file);
+        assert(back.controller == 3 && Eden::PreferencesFor(quest, file).controller == 3 &&
+               Eden::PreferencesFor(racer, file).controller == -1 && Eden::LoadPreferences(file).controller == -1);
         assert(back.hud == 0 && back.volume == 40 && back.mute == 1 && back.vibration == 0 && back.language == 13 &&
                back.own_mapping && back.mapping == game.mapping && back.performance[2] == 1 &&
-               back.performance[0] == -1);
+               back.performance[0] == -1 && back.rng_seed == -1);
         const auto general = Eden::LoadPreferences(file);
         const auto mine = Eden::PreferencesFor(quest, file);
         assert(!mine.hud && mine.volume == 40 && mine.mute && !mine.vibration && mine.language == 13 &&
@@ -244,6 +381,26 @@ int main() {
         auto wrong = game;
         wrong.volume = 101;
         assert(!Eden::SaveGameSettings(quest, wrong, file));
+        wrong = game;
+        wrong.rng_seed = 0xffffffffLL + 1;
+        assert(!Eden::SaveGameSettings(quest, wrong, file));
+        game.rng_seed = 0;
+        assert(Eden::SaveGameSettings(quest, game, file));
+        assert(Eden::LoadGameSettings(quest, file).rng_seed == 0);
+        game.rng_seed = -1;
+        // A typed seed: digits only, within 32 bits.
+        assert(Eden::RngSeedFromText("0") == 0 && Eden::RngSeedFromText("1234") == 1234 &&
+               Eden::RngSeedFromText("007") == 7 && Eden::RngSeedFromText("4294967295") == 0xffffffffLL);
+        assert(Eden::RngSeedFromText("") == -1 && Eden::RngSeedFromText("4294967296") == -1 &&
+               Eden::RngSeedFromText("99999999999") == -1 && Eden::RngSeedFromText("-1") == -1 &&
+               Eden::RngSeedFromText("+5") == -1 && Eden::RngSeedFromText("12a") == -1 &&
+               Eden::RngSeedFromText(" 12") == -1 && Eden::RngSeedFromText("1.5") == -1);
+        // Every seed a text can name is one the settings take.
+        game.rng_seed = Eden::RngSeedFromText("4294967295");
+        assert(Eden::SaveGameSettings(quest, game, file) &&
+               Eden::LoadGameSettings(quest, file).rng_seed == 0xffffffffLL);
+        game.rng_seed = -1;
+        assert(Eden::SaveGameSettings(quest, game, file) && Eden::LoadGameSettings(quest, file).rng_seed == -1);
         wrong = game;
         wrong.mute = 2;
         assert(!Eden::SaveGameSettings(quest, wrong, file));

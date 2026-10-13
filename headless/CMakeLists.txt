@@ -35,6 +35,25 @@ function(write_derived path content)
     file(WRITE "${path}.in" "${content}")
     configure_file("${path}.in" "${path}" COPYONLY)
 endfunction()
+# Eden's helper that hands a small vector on (FixSmallVectorADL, texture_cache/util.h) has two
+# forms: the vector itself, or - for a GCC 12 bug with an old Boost - a copy of it on the heap.
+# Boost's version chooses, and the header reads it without including <boost/version.hpp>: where
+# nothing else has, the version reads as 0 and the copy is made. That was every draw that follows
+# a guest write of GPU memory, every texture upload and every buffer copy: 2,300 of the GPU
+# thread's 3,400 allocations a frame in a large open-world game. With the include, the vector
+# itself (the bundled Boost is recent).
+file(READ "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/util.h" texture_util_header)
+string(REPLACE "#include <boost/container/small_vector.hpp>"
+    "#include <boost/container/small_vector.hpp>\n#include <boost/version.hpp>"
+    texture_util_derived "${texture_util_header}")
+if(texture_util_derived STREQUAL texture_util_header OR NOT texture_util_header MATCHES "FixSmallVectorADL")
+    message(FATAL_ERROR "Pinned texture cache util.h layout changed")
+endif()
+write_derived("${PORT_BUILD_DIR}/small-vector/video_core/texture_cache/util.h" "${texture_util_derived}")
+target_include_directories(video_core BEFORE PRIVATE "${PORT_BUILD_DIR}/small-vector")
+set(MULTIPLAYER_SOURCE "${PROJECT_SOURCE_DIR}")
+set(MULTIPLAYER_OUTPUT "${PORT_BUILD_DIR}/multiplayer")
+include("${EDEN_PORT_DIR}/multiplayer_packets.cmake")
 # Keep successful JIT invariant checks inline; preserve upstream failure handling.
 # Use a private include root so other core/renderer targets retain their headers.
 file(READ "${PROJECT_SOURCE_DIR}/src/common/assert.h" jit_assert_header)
@@ -79,6 +98,13 @@ if(PS5_NATIVE)
     target_sources(common PRIVATE "${PORT_BUILD_DIR}/emutls.c")
     target_include_directories(common PRIVATE "${COMPILER_RT}")
 endif()
+# ReShade's effect compiler takes alloca from <malloc.h>, which the Payload SDK replaces by an
+# #error. Its own copy of that header, for this target alone.
+if(PS5_NATIVE AND TARGET reshadefx)
+    write_derived("${PORT_BUILD_DIR}/reshadefx-compat/malloc.h"
+        "#pragma once\n#include <stdlib.h>\n#ifndef alloca\n#define alloca __builtin_alloca\n#endif\n")
+    target_include_directories(reshadefx BEFORE PRIVATE "${PORT_BUILD_DIR}/reshadefx-compat")
+endif()
 # Use the already-qualified no-arena allocation contract in the full core.
 get_target_property(common_sources common SOURCES)
 list(REMOVE_ITEM common_sources host_memory.cpp sparse_large_vector.cpp)
@@ -104,13 +130,18 @@ function(eden_sparse_replace old new count)
 endfunction()
 eden_sparse_replace("AllocateMemoryPages(alloc_size)" "AllocateSparsePages(alloc_size)" 2)
 eden_sparse_replace("FreeMemoryPages(base_ptr, alloc_size)" "FreeSparsePages(base_ptr, alloc_size)" 2)
+# Eden defines the host page size, its bit count and its mask as three inline variables, the last
+# two computed from the first. Each inline variable has an initializer of its own, and on the
+# PS5 they do not run in the order of the header: the bit count and the mask were computed from
+# a page size that was still zero, and every committed page then set a bit far outside the
+# vector's bitmap, in whatever the heap kept next to it. Each one asks the system itself.
+eden_sparse_replace("inline const u64 HostPageBits = std::countr_zero(HostPageSize);"
+    "inline const u64 HostPageBits = std::countr_zero(static_cast<u64>(sysconf(_SC_PAGESIZE)));" 1)
+eden_sparse_replace("inline const u64 HostPageMask = ~(HostPageSize - 1);"
+    "inline const u64 HostPageMask = ~(static_cast<u64>(sysconf(_SC_PAGESIZE)) - 1);" 1)
+# Eden tests the result; CommitSparsePage has none (it ends the app when memory runs out).
 eden_sparse_replace("mprotect(reinterpret_cast<void*>(page), HostPageSize, PROT_READ | PROT_WRITE)"
-    "CommitSparsePage(page)" 1)
-# ZeroRegion (an unmap) asks whether the page of entry `start / sizeof(T)` was committed where it
-# means the page of entry `start`. A wrong "yes" writes zeroes into a part of the table nothing
-# was ever written to: harmless in a dense table, a fault in a read-only one. A wrong "no" leaves
-# the first entries of the unmapped range as they were.
-eden_sparse_replace("if (IsCommittedPage(start / sizeof(T))) {" "if (IsCommittedPage(start)) {" 1)
+    "(CommitSparsePage(page), 0)" 1)
 eden_sparse_replace("void FreeMemoryPages(void* base, std::size_t size) noexcept;"
     "void FreeMemoryPages(void* base, std::size_t size) noexcept;\nvoid* AllocateSparsePages(std::size_t size) noexcept;\nvoid FreeSparsePages(void* base, std::size_t size) noexcept;\nvoid CommitSparsePage(std::uintptr_t page) noexcept;\nbool SparseTablesAvailable() noexcept;" 1)
 # A vector can carry a mirror mirror_index entries further on (the JIT's direct page table,
@@ -132,6 +163,36 @@ string(REPLACE "    to.impl->previous_fiber = weak_from.lock();"
 string(REPLACE "    // \"from\" might no longer be valid if the thread was killed\n    if (auto from = weak_from.lock()) {"
     "    if (auto* from = static_cast<Fiber*>(transfer.data)) {" fiber_source "${fiber_source}")
 write_derived("${PORT_BUILD_DIR}/fiber.cpp" "${fiber_source}")
+# Eden writes a log line on the thread that logs it, and flushes the file to storage after every
+# error line. On the console a flush is a storage write of about 0.7 ms, and a game that reads
+# unmapped memory logs an error for each read: a large open-world game does it six hundred to twelve
+# hundred times at a stretch, which held a guest core inside the logger for 0.4 to 0.9 s while no
+# frame was shown (33 such frames in a session of five and a half minutes). An error is flushed at
+# once when the last flush is 100 ms old, as a lone error always is; in a burst the lines in between
+# wait for the next flush (the next error after 100 ms, a full buffer, or the logger's own Flush).
+file(READ "${PROJECT_SOURCE_DIR}/src/common/logging.cpp" logging_source)
+set(old_error_flush "            if (write_limit_exceeded)\n                enabled = false;\n            file->Flush();")
+set(old_log_file "    std::optional<FS::IOFile> file;")
+foreach(pinned IN ITEMS old_error_flush old_log_file)
+    string(FIND "${logging_source}" "${${pinned}}" pinned_at)
+    if(pinned_at LESS 0)
+        message(FATAL_ERROR "Pinned log file backend changed (${pinned}); review the flush of error lines.")
+    endif()
+endforeach()
+string(REPLACE "${old_error_flush}" [=[            if (write_limit_exceeded)
+                enabled = false;
+            const long long flush_now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (write_limit_exceeded || flush_now - error_flushed_ms.load(std::memory_order_relaxed) >= 100) {
+                error_flushed_ms.store(flush_now, std::memory_order_relaxed);
+                file->Flush();
+            }]=] logging_source "${logging_source}")
+string(REPLACE "${old_log_file}" "    std::optional<FS::IOFile> file;\n    std::atomic<long long> error_flushed_ms{-1000};  // when an error line was last flushed" logging_source "${logging_source}")
+write_derived("${PORT_BUILD_DIR}/logging.cpp" "#include <atomic>\n#include <chrono>\n${logging_source}")
+get_target_property(common_sources common SOURCES)
+list(REMOVE_ITEM common_sources logging.cpp)
+list(APPEND common_sources "${PORT_BUILD_DIR}/logging.cpp")
+set_property(TARGET common PROPERTY SOURCES "${common_sources}")
 get_target_property(common_sources common SOURCES)
 list(REMOVE_ITEM common_sources fiber.cpp)
 list(APPEND common_sources "${PORT_BUILD_DIR}/fiber.cpp")
@@ -362,29 +423,27 @@ list(FILTER jit_sources EXCLUDE REGEX "(^|/)opt_passes\\.cpp$")
 set_property(TARGET dynarmic PROPERTY SOURCES "${jit_sources}")
 target_sources(dynarmic PRIVATE "${PORT_BUILD_DIR}/opt_passes.cpp")
 
-# Keep the checked page-table path, but use x86 scaled addressing and avoid a
-# 64-bit mask load for Eden's packed pointer. Apply to both A32 and A64 emitters.
+# Avoid a 64-bit mask load for Eden's packed pointer in the checked page-table path. Apply to
+# both A32 and A64 emitters.
 set(memory_relative "dynarmic/backend/x64/emit_x64_memory.h")
 file(READ "${PROJECT_SOURCE_DIR}/src/dynarmic/src/${memory_relative}" memory_emitter)
-foreach(index IN ITEMS "tmp.cvt64()" "tmp")
-    set(lookup "    code.shl(tmp, int(ctx.conf.page_table_log2_stride));\n    code.mov(page, qword[r14 + ${index}]);")
-    string(FIND "${memory_emitter}" "${lookup}" offset)
-    if(offset LESS 0)
-        message(FATAL_ERROR "Pinned page-table indexing changed")
-    endif()
-    string(REPLACE "${lookup}" [=[    if (ctx.conf.page_table_log2_stride <= 3) {
-        code.mov(page, qword[r14 + tmp * (1 << ctx.conf.page_table_log2_stride)]);
-    } else {
-        code.shl(tmp, int(ctx.conf.page_table_log2_stride));
-        code.mov(page, qword[r14 + tmp]);
-    }]=] memory_emitter "${memory_emitter}")
-endforeach()
 set(pointer_mask "    // mask away attributes\n    if (ctx.conf.page_table_pointer_mask == 0) {")
-set(pointer_end "        code.sar(page, *ctx.conf.page_table_sign_extension);\n    }\n\n    code.jz")
-foreach(anchor IN ITEMS pointer_mask pointer_end)
-    string(FIND "${memory_emitter}" "${${anchor}}" offset)
-    if(offset LESS 0)
-        message(FATAL_ERROR "Pinned page-table pointer decoding changed")
+# The A32 and the A64 lookup end their own sign extension differently; each closes the else.
+set(pointer_end_a32 "        code.sar(page, 63 - int(*ctx.conf.page_table_sign_extension));\n    }\n")
+set(pointer_end_a64 "        code.sar(page, *ctx.conf.page_table_sign_extension);\n    }\n")
+foreach(anchor IN ITEMS pointer_mask pointer_end_a32 pointer_end_a64)
+    string(REPLACE "${${anchor}}" "" without "${memory_emitter}")
+    string(LENGTH "${memory_emitter}" before)
+    string(LENGTH "${without}" after)
+    string(LENGTH "${${anchor}}" each)
+    math(EXPR found "(${before} - ${after}) / ${each}")
+    if(anchor STREQUAL "pointer_mask")
+        set(expected 2)
+    else()
+        set(expected 1)
+    endif()
+    if(NOT found EQUAL expected)
+        message(FATAL_ERROR "Pinned page-table pointer decoding changed: ${found} of ${anchor}, expected ${expected}")
     endif()
 endforeach()
 string(REPLACE "${pointer_mask}" [=[    // Eden packs pointer bits 12..55. Sign extension removes the upper
@@ -397,8 +456,9 @@ string(REPLACE "${pointer_mask}" [=[    // Eden packs pointer bits 12..55. Sign 
     } else {
     // mask away attributes
     if (ctx.conf.page_table_pointer_mask == 0) {]=] memory_emitter "${memory_emitter}")
-string(REPLACE "${pointer_end}" "        code.sar(page, *ctx.conf.page_table_sign_extension);\n    }\n    }\n\n    code.jz"
-    memory_emitter "${memory_emitter}")
+foreach(anchor IN ITEMS pointer_end_a32 pointer_end_a64)
+    string(REPLACE "${${anchor}}" "${${anchor}}    }\n" memory_emitter "${memory_emitter}")
+endforeach()
 # The packed-pointer decoder above uses only immediates. Like upstream's
 # unmasked absolute-offset path, it can reuse the index register for the page.
 # Relative offsets and other pointer formats still need two scratch registers.
@@ -662,6 +722,22 @@ foreach(bits 32 64)
         if(inline_exclusive_at LESS 0)
             message(FATAL_ERROR "Pinned exclusive-access configuration changed")
         endif()
+        # Eden's Unsafe CPU mode (Settings > Performance > Faster CPU emulation) clears this again, twice:
+        # cpuopt_unsafe_host_mmu is false on every platform but Apple, Linux, Android and Windows, so the
+        # Unsafe case and the closing IsFastmemEnabled() check both drop fastmem_exclusive_access, and every
+        # LDXR/STXR then left JIT code for the global-monitor helpers (14% of the core time in one game,
+        # measured). The pointer reset stays; the inline page-table path needs no fastmem pointer.
+        set(unsafe_old "        if (!Settings::values.cpuopt_unsafe_host_mmu) {\n            config.fastmem_pointer = std::nullopt;\n            config.fastmem_exclusive_access = false;\n        }")
+        set(unsafe_new "        if (!Settings::values.cpuopt_unsafe_host_mmu) {\n            config.fastmem_pointer = std::nullopt;\n        }")
+        set(final_old "    if (!Settings::IsFastmemEnabled()) {\n        config.fastmem_pointer = std::nullopt;\n        config.fastmem_exclusive_access = false;\n    }")
+        set(final_new "    if (!Settings::IsFastmemEnabled()) {\n        config.fastmem_pointer = std::nullopt;\n    }")
+        foreach(pair IN ITEMS unsafe final)
+            string(FIND "${wrapper}" "${${pair}_old}" unsafe_at)
+            if(unsafe_at LESS 0)
+                message(FATAL_ERROR "Pinned Unsafe CPU mode fastmem handling changed (${pair}, arm_dynarmic_${bits})")
+            endif()
+            string(REPLACE "${${pair}_old}" "${${pair}_new}" wrapper "${wrapper}")
+        endforeach()
     endif()
       string(REPLACE "std::uint32_t(512_MiB)" "std::uint32_t(16_MiB)" wrapper "${wrapper}")
       # Guest cores 0-2 share a 640 MiB code budget. A64: 256/192/192, since a large
@@ -686,34 +762,30 @@ foreach(bits 32 64)
             set(sample_pc "m_jit->Regs()[15]")
             set(sample_fp "m_jit->Fpscr()")
         endif()
+        # NoteRunning must sit before Run(): stamped at SetState, consumed on entry, so the delta
+        # is time spent runnable-but-unscheduled. After Run() it would also count the slice the
+        # thread then executes, which for a main loop is the larger half of the reading.
         string(REPLACE "    return TranslateHaltReason(m_jit->Run());"
-            "    const auto halt = m_jit->Run();\n    ::Eden::Performance::SampleCpu(m_core_index, 0, ${sample_pc}, GetSvcNumber(), ${sample_fp});\n    return TranslateHaltReason(halt);"
+            "    const auto guest_tid = thread ? thread->GetThreadId() : 0;\n    ::Eden::Performance::NoteRunning(guest_tid, ::Eden::Performance::NowNs());\n    const auto halt = m_jit->Run();\n    ::Eden::Performance::SampleCpu(m_core_index, guest_tid, ${sample_pc}, GetSvcNumber(), ${sample_fp});\n    return TranslateHaltReason(halt);"
             wrapper "${wrapper}")
+        string(FIND "${wrapper}" "NoteRunning(guest_tid" note_running_at)
+        if(note_running_at LESS 0)
+            message(FATAL_ERROR "Pinned RunThread dispatch sampling changed")
+        endif()
         if(bits EQUAL 32)
-            string(REPLACE "u8 DynarmicCallbacks32::MemoryRead8(u32 vaddr) {"
-                "u8 DynarmicCallbacks32::MemoryRead8(u32 vaddr) {\n    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].reads);"
-                wrapper "${wrapper}")
-            string(REPLACE "u16 DynarmicCallbacks32::MemoryRead16(u32 vaddr) {"
-                "u16 DynarmicCallbacks32::MemoryRead16(u32 vaddr) {\n    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].reads);"
-                wrapper "${wrapper}")
-            string(REPLACE "u32 DynarmicCallbacks32::MemoryRead32(u32 vaddr) {"
-                "u32 DynarmicCallbacks32::MemoryRead32(u32 vaddr) {\n    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].reads);"
-                wrapper "${wrapper}")
-            string(REPLACE "u64 DynarmicCallbacks32::MemoryRead64(u32 vaddr) {"
-                "u64 DynarmicCallbacks32::MemoryRead64(u32 vaddr) {\n    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].reads);"
-                wrapper "${wrapper}")
-            string(REPLACE "void DynarmicCallbacks32::MemoryWrite8(u32 vaddr, u8 value) {"
-                "void DynarmicCallbacks32::MemoryWrite8(u32 vaddr, u8 value) {\n    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].writes);"
-                wrapper "${wrapper}")
-            string(REPLACE "void DynarmicCallbacks32::MemoryWrite16(u32 vaddr, u16 value) {"
-                "void DynarmicCallbacks32::MemoryWrite16(u32 vaddr, u16 value) {\n    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].writes);"
-                wrapper "${wrapper}")
-            string(REPLACE "void DynarmicCallbacks32::MemoryWrite32(u32 vaddr, u32 value) {"
-                "void DynarmicCallbacks32::MemoryWrite32(u32 vaddr, u32 value) {\n    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].writes);"
-                wrapper "${wrapper}")
-            string(REPLACE "void DynarmicCallbacks32::MemoryWrite64(u32 vaddr, u64 value) {"
-                "void DynarmicCallbacks32::MemoryWrite64(u32 vaddr, u64 value) {\n    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].writes);"
-                wrapper "${wrapper}")
+            foreach(counted IN ITEMS "u64 DynarmicCallbacks32::MemoryRead(u32 vaddr, size_t size) {|reads"
+                    "void DynarmicCallbacks32::MemoryWrite(Dynarmic::A32::VAddr vaddr, u64 value, size_t size) {|writes")
+                string(REPLACE "|" ";" counted_parts "${counted}")
+                list(GET counted_parts 0 counted_head)
+                list(GET counted_parts 1 counted_name)
+                string(FIND "${wrapper}" "${counted_head}" counted_at)
+                if(counted_at LESS 0)
+                    message(FATAL_ERROR "Pinned A32 callback changed: ${counted_head}")
+                endif()
+                string(REPLACE "${counted_head}"
+                    "${counted_head}\n    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].${counted_name});"
+                    wrapper "${wrapper}")
+            endforeach()
             string(REPLACE "bool DynarmicCallbacks32::MemoryWriteExclusive8(u32 vaddr, u8 value, u8 expected) {"
                 "bool DynarmicCallbacks32::MemoryWriteExclusive8(u32 vaddr, u8 value, u8 expected) {\n    ::Eden::Performance::CountJit(::Eden::Performance::jit_callbacks[m_parent.m_core_index].exclusive_writes);"
                 wrapper "${wrapper}")
@@ -744,8 +816,7 @@ foreach(bits 32 64)
             # dev-settings watch=: writes into the watched range reach these callbacks (its
             # pages are marked debug) and are reported with the guest thread (watch.h).
             set(watch_context "m_memory, *m_parent.m_jit, Kernel::GetCurrentThread(m_parent.m_system.Kernel()), m_parent.m_core_index")
-            foreach(write IN ITEMS "MemoryWrite8(u64 vaddr, u8 value)|1|value" "MemoryWrite16(u64 vaddr, u16 value)|2|value"
-                    "MemoryWrite32(u64 vaddr, u32 value)|4|value" "MemoryWrite64(u64 vaddr, u64 value)|8|value"
+            foreach(write IN ITEMS "MemoryWrite(Dynarmic::A64::VAddr vaddr, u64 value, std::size_t size)|size|value"
                     "MemoryWrite128(u64 vaddr, Dynarmic::A64::Vector value)|16|value[0]"
                     "MemoryWriteExclusive8(u64 vaddr, std::uint8_t value, std::uint8_t expected)|1|value"
                     "MemoryWriteExclusive16(u64 vaddr, std::uint16_t value, std::uint16_t expected)|2|value"
@@ -807,6 +878,29 @@ string(REPLACE "${prefetch_old}"
     physical_core_source "${physical_core_source}")
 write_derived("${PORT_BUILD_DIR}/physical_core.cpp"
     "#include \"${EDEN_PORT_DIR}/guest_fault.h\"\n#include \"${EDEN_PORT_DIR}/performance.h\"\n#include \"core/arm/debug.h\"\n${physical_core_source}")
+# The guest's tick counter gives when a frame is a little late (headless/guest_clock.h): its
+# rate is applied where Eden applies its own clock settings, and it follows the frames the
+# game hands in (BufferQueueProducer::QueueBuffer, below).
+file(READ "${PROJECT_SOURCE_DIR}/src/core/core_timing.cpp" core_timing_source)
+set(guest_clock_old "    if (::Settings::values.sync_core_speed.GetValue()) {")
+string(FIND "${core_timing_source}" "${guest_clock_old}" guest_clock_at)
+if(guest_clock_at LESS 0)
+    message(FATAL_ERROR "Pinned CoreTiming::GetClockTicks changed")
+endif()
+string(REPLACE "${guest_clock_old}"
+    "    fres = ::Eden::GuestClock::Scale(fres);\n${guest_clock_old}"
+    core_timing_source "${core_timing_source}")
+write_derived("${PORT_BUILD_DIR}/core_timing.cpp" "#include \"${EDEN_PORT_DIR}/guest_clock.h\"\n${core_timing_source}")
+file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp" producer_source)
+set(queue_old "    input.Deflate(&timestamp, &is_auto_timestamp, &crop, &scaling_mode, &transform, &sticky_transform_, &async, &swap_interval, &fence);")
+string(FIND "${producer_source}" "${queue_old}" queue_at)
+if(queue_at LESS 0)
+    message(FATAL_ERROR "Pinned buffer queue hand-off changed")
+endif()
+string(REPLACE "${queue_old}" "${queue_old}\n    ::Eden::GuestClock::FrameQueued(swap_interval);" producer_source "${producer_source}")
+# (A development build adds its counters to the same source; it is written further below.)
+list(REMOVE_ITEM core_sources "core_timing.cpp")
+list(APPEND core_sources "${PORT_BUILD_DIR}/core_timing.cpp")
 list(REMOVE_ITEM core_sources "hle/kernel/physical_core.cpp")
 list(APPEND core_sources "${PORT_BUILD_DIR}/physical_core.cpp")
 # Guest kernel spin locks spin before blocking (performance.h kernel_spin_iterations).
@@ -876,7 +970,6 @@ if(EDEN_DEV_PROFILE)
     write_derived("${PORT_BUILD_DIR}/nvhost_ctrl.cpp" "#include <cstdio>\n#include \"${EDEN_PORT_DIR}/performance.h\"\n${ctrl_source}")
     list(REMOVE_ITEM core_sources "hle/service/nvdrv/devices/nvhost_ctrl.cpp")
     list(APPEND core_sources "${PORT_BUILD_DIR}/nvhost_ctrl.cpp")
-    file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp" producer_source)
     set(producer_old "        Status status = WaitForFreeSlotThenRelock(async, &found, &return_flags, lock);")
     string(FIND "${producer_source}" "${producer_old}" producer_at)
     if(producer_at LESS 0)
@@ -953,7 +1046,7 @@ if(EDEN_DEV_PROFILE)
             }
         }"
         producer_source "${producer_source}")
-    set(dev_producer_source "#include \"${EDEN_PORT_DIR}/performance.h\"\n#include \"core/arm/debug.h\"\n#include \"core/hle/kernel/k_thread.h\"\n#include \"core/hle/kernel/k_process.h\"\n#include \"core/memory.h\"\n${producer_source}")
+    set(dev_producer_source "#include \"${EDEN_PORT_DIR}/guest_clock.h\"\n#include \"${EDEN_PORT_DIR}/performance.h\"\n#include \"core/arm/debug.h\"\n#include \"core/hle/kernel/k_thread.h\"\n#include \"core/hle/kernel/k_process.h\"\n#include \"core/memory.h\"\n${producer_source}")
     # Guest vsync pacing (multicore): composition-event lateness, VSyncThread wake-up
     # latency and composition time.
     file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/vi/conductor.cpp" conductor_source)
@@ -1059,8 +1152,25 @@ if(EDEN_DEV_PROFILE)
     if(ipc_at LESS 0)
         message(FATAL_ERROR "Pinned SendSyncRequest changed")
     endif()
-    string(REPLACE "${ipc_old}" "    const auto ipc_start = ::Eden::Performance::NowNs();\n    const Result ipc_result = session->SendSyncRequest(kernel, message, buffer_size);\n    ::Eden::Performance::AddSince(::Eden::Performance::guest_ipc_wait, ipc_start);\n    R_RETURN(ipc_result);" ipc_source "${ipc_source}")
-    write_derived("${PORT_BUILD_DIR}/svc_ipc.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${ipc_source}")
+    # Which guest thread is waiting, not only how long the waits summed to: a frame held up by one
+    # thread and a frame with a dozen idle helpers reporting the same total look identical without
+    # this, and only one of them can be costing the frame (performance.h).
+    string(REPLACE "${ipc_old}" [=[    const auto ipc_start = ::Eden::Performance::NowNs();
+    const Result ipc_result = session->SendSyncRequest(kernel, message, buffer_size);
+    const long long ipc_ns = ::Eden::Performance::NowNs() - ipc_start;
+    ::Eden::Performance::AddNs(::Eden::Performance::guest_ipc_wait, ipc_ns);
+    {
+        bool fresh = false;
+        const unsigned ipc_slot =
+            ::Eden::Performance::IpcThreadSlotFor(GetCurrentThread(kernel).GetThreadId(), &fresh);
+        if (fresh) {
+            if (const auto ipc_name = Core::GetThreadName(&GetCurrentThread(kernel)))
+                ::Eden::Performance::SetIpcThreadName(ipc_slot, ipc_name->c_str());
+        }
+        ::Eden::Performance::AddIpcThread(ipc_slot, ipc_ns);
+    }
+    R_RETURN(ipc_result);]=] ipc_source "${ipc_source}")
+    write_derived("${PORT_BUILD_DIR}/svc_ipc.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n#include \"core/arm/debug.h\"\n${ipc_source}")
     list(REMOVE_ITEM core_sources "hle/kernel/svc/svc_ipc.cpp")
     list(APPEND core_sources "${PORT_BUILD_DIR}/svc_ipc.cpp")
 endif()
@@ -1134,24 +1244,33 @@ if(EDEN_A32_FASTMEM)
     endif()
     string(REPLACE "${arena_old}" "        if (process.IsApplication() && !process.Is64Bit() && Settings::IsFastmemEnabled()) {"
         arena_source "${arena_source}")
-    # Upstream places code at any 4 KiB offset below 16 MiB, which leaves three of four
-    # layouts with every module page out of 16 KiB phase with its backing. Keep the same
-    # range with 16 KiB steps so module chunks can alias.
-    file(READ "${PROJECT_SOURCE_DIR}/src/core/loader/deconstructed_rom_directory.cpp" aslr_source)
-    set(aslr_old "? ::Settings::values.rng_seed.GetValue() : Common::Random::Random64(0)) << 12) & 0xfff000;")
-    string(FIND "${aslr_source}" "${aslr_old}" aslr_at)
-    if(aslr_at LESS 0)
-        message(FATAL_ERROR "Pinned code ASLR offset changed")
-    endif()
-    string(REPLACE "${aslr_old}" "? ::Settings::values.rng_seed.GetValue() : Common::Random::Random64(0)) << 14) & 0xffc000;"
-        aslr_source "${aslr_source}")
-    write_derived("${PORT_BUILD_DIR}/deconstructed_rom_directory.cpp" "${aslr_source}")
-    list(REMOVE_ITEM core_sources "loader/deconstructed_rom_directory.cpp")
-    list(APPEND core_sources "${PORT_BUILD_DIR}/deconstructed_rom_directory.cpp")
 endif()
 write_derived("${PORT_BUILD_DIR}/memory.cpp" "${arena_source}")
 list(REMOVE_ITEM core_sources "memory.cpp")
 list(APPEND core_sources "${PORT_BUILD_DIR}/memory.cpp")
+# Where a game's code is loaded: at a random offset, or at the one the game's seed gives
+# (load_address.h). Upstream takes the seed from its RNG seed setting, which also seeds the
+# random numbers a game is given; the port's seed fixes the offset alone.
+# With the A32 fastmem window the offset moves in 16 KiB steps over the same range: upstream
+# places code at any 4 KiB offset below 16 MiB, which leaves three of four layouts with every
+# module page out of 16 KiB phase with its backing, and module chunks could not alias.
+file(READ "${PROJECT_SOURCE_DIR}/src/core/loader/deconstructed_rom_directory.cpp" aslr_source)
+set(aslr_old "((::Settings::values.rng_seed_enabled.GetValue()\n        ? ::Settings::values.rng_seed.GetValue() : Common::Random::Random64(0)) << 12) & 0xfff000;")
+string(FIND "${aslr_source}" "${aslr_old}" aslr_at)
+if(aslr_at LESS 0)
+    message(FATAL_ERROR "Pinned code ASLR offset changed")
+endif()
+if(EDEN_A32_FASTMEM)
+    set(aslr_steps "<< 14) & 0xffc000")
+else()
+    set(aslr_steps "<< 12) & 0xfff000")
+endif()
+string(REPLACE "${aslr_old}" "((::Eden::code_seed.load() >= 0 ? static_cast<u64>(::Eden::code_seed.load())\n        : Common::Random::Random64(0)) ${aslr_steps};"
+    aslr_source "${aslr_source}")
+write_derived("${PORT_BUILD_DIR}/deconstructed_rom_directory.cpp"
+    "#include \"${EDEN_PORT_DIR}/load_address.h\"\n${aslr_source}")
+list(REMOVE_ITEM core_sources "loader/deconstructed_rom_directory.cpp")
+list(APPEND core_sources "${PORT_BUILD_DIR}/deconstructed_rom_directory.cpp")
 # GetPseudoDeviceId read the seed through the control data without checking that there is
 # any (a game without control data, such as a homebrew NRO): seed 0 then, as for other
 # NACP fields Eden defaults when the metadata is missing.
@@ -1268,10 +1387,80 @@ if(PS5_NATIVE)
     string(REPLACE "            nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i], nso_header.segments[i].offset);"
         "            auto* destination = codeset.memory.data() + module_start + nso_header.segments[i].location;\n            if (!nso_header.IsSegmentCompressed(i)) {\n                if (nso_file.Read(destination, nso_header.segments[i].size, nso_header.segments[i].offset) != nso_header.segments[i].size) return std::nullopt;\n            } else if (nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i], nso_header.segments[i].offset) != nso_header.segments_compressed_size[i]) return std::nullopt;"
         nso_source "${nso_source}")
-    string(REPLACE "DecompressDataLZ4(decompressed_size.data()," "DecompressDataLZ4(destination," nso_source "${nso_source}")
-    string(REPLACE "                ASSERT(r == int(nso_header.segments[i].size));" "                if (r != int(nso_header.segments[i].size)) return std::nullopt;" nso_source "${nso_source}")
-    string(REPLACE "                std::memcpy(codeset.memory.data() + module_start + nso_header.segments[i].location, decompressed_size.data(), nso_header.segments[i].size);" "" nso_source "${nso_source}")
-    string(REPLACE "            } else {\n                std::memcpy(codeset.memory.data() + module_start + nso_header.segments[i].location, compressed_data.data(), nso_header.segments[i].size);" "" nso_source "${nso_source}")
+    # A segment is decoded where it belongs (read there directly when it is not compressed), and
+    # a segment that does not decode ends the load instead of the app.
+    set(old_nso_segment [=[            if (nso_header.IsSegmentCompressed(i)) {
+                if (nso_header.IsZBICCompressed()) {
+                    // ZBIC compression
+                    const int r = Common::Compression::DecompressDataZBIC(
+                        std::span<u8>{decompressed_size}.first(nso_header.segments[i].size),
+                        std::span<const u8>{compressed_data}.first(nso_header.segments_compressed_size[i])
+                    );
+                    ASSERT(r > 0);
+                } else {
+                    // LZ4 compression
+                    int r = Common::Compression::DecompressDataLZ4(
+                        decompressed_size.data(),
+                        nso_header.segments[i].size,
+                        compressed_data.data(),
+                        nso_header.segments_compressed_size[i]
+                    );
+                    ASSERT(r == int(nso_header.segments[i].size));
+                }
+
+                std::memcpy(
+                    codeset.memory.data() + module_start + nso_header.segments[i].location,
+                    decompressed_size.data(),
+                    nso_header.segments[i].size
+                );
+            } else {
+                // Not compressed
+                std::memcpy(
+                    codeset.memory.data() + module_start + nso_header.segments[i].location,
+                    compressed_data.data(),
+                    nso_header.segments[i].size
+                );
+            }
+]=])
+    string(FIND "${nso_source}" "${old_nso_segment}" nso_segment_at)
+    if(nso_segment_at LESS 0)
+        message(FATAL_ERROR "Pinned NSO segment decoding changed")
+    endif()
+    string(REPLACE "${old_nso_segment}" [=[            if (nso_header.IsSegmentCompressed(i)) {
+                if (nso_header.IsZBICCompressed()) {
+                    const int r = Common::Compression::DecompressDataZBIC(
+                        std::span<u8>{destination, nso_header.segments[i].size},
+                        std::span<const u8>{compressed_data}.first(nso_header.segments_compressed_size[i]));
+                    if (r <= 0) return std::nullopt;
+                } else {
+                    const int r = Common::Compression::DecompressDataLZ4(destination, nso_header.segments[i].size,
+                        compressed_data.data(), nso_header.segments_compressed_size[i]);
+                    if (r != int(nso_header.segments[i].size)) return std::nullopt;
+                }
+            }
+]=] nso_source "${nso_source}")
+    # Cheats address the game's main module. Eden registers a cheat list for every module that
+    # has one, and the last registration wins: a cheat file without a build ID in its name
+    # (mods/<title ID>/cheat_<name>.txt) matches every module, so its cheats were applied
+    # against the last module loaded (sdk) and changed nothing in the game.
+    set(old_nso_cheats [=[        if (!cheats.empty()) {
+            system.RegisterCheatList(cheats, nso_header.build_id, load_base, image_size);]=])
+    set(new_nso_cheats [=[        if (name == "main") {
+            // The build ID a cheat file for this version of the game is named after.
+            char build[17]{};
+            for (int i = 0; i < 8; ++i)
+                std::snprintf(build + i * 2, 3, "%02X", static_cast<unsigned>(nso_header.build_id[i]));
+            std::fprintf(stderr, "[ProsperoEden] cheats: %zu entries for main (build ID %s) at %#llx (%llu bytes)\n",
+                         cheats.size(), build, static_cast<unsigned long long>(load_base),
+                         static_cast<unsigned long long>(image_size));
+        }
+        if (name == "main" && !cheats.empty()) {
+            system.RegisterCheatList(cheats, nso_header.build_id, load_base, image_size);]=])
+    string(FIND "${nso_source}" "${old_nso_cheats}" nso_cheats_offset)
+    if(nso_cheats_offset LESS 0)
+        message(FATAL_ERROR "Pinned NSO cheat registration changed")
+    endif()
+    string(REPLACE "${old_nso_cheats}" "${new_nso_cheats}" nso_source "${nso_source}")
     string(PREPEND nso_source "#include <cstdio>\n")
     write_derived("${PORT_BUILD_DIR}/nso.cpp" "${nso_source}")
     list(REMOVE_ITEM core_sources loader/nso.cpp)
@@ -1303,22 +1492,10 @@ function(eden_patch source old new)
     set(${source} "${patched}" PARENT_SCOPE)
 endfunction()
 
-# Mods (headless/mods.h). The pinned patch code cannot apply an .ips patch (it looks for the
-# patch's magic in the game's code, and its end marker test never passes) and writes zeros for
-# the text of a .pchtxt string patch, whose record also had a fixed size that a long line
-# overran. Eden fixed these after this pin; the same fixes are made here. Its .pchtxt reader also
-# takes every line as a record or a flag: the credits at the end of a real patch file then wrote
-# over the start of the game's code. Only records and known flags are read here
-# (headless/mods_check.cpp checks all of it).
+# Mods (headless/mods.h). Eden's .pchtxt reader takes every line as a record or a flag: the
+# credits at the end of a real patch file then wrote over the start of the game's code. Only
+# records and known flags are read here (headless/mods_check.cpp checks all of it).
 file(READ "${PROJECT_SOURCE_DIR}/src/core/file_sys/ips_layer.cpp" ips_source)
-eden_patch(ips_source "magic.size() > 3 &&" "magic.size() >= 3 &&")
-eden_patch(ips_source "magic.size() > 4 &&" "magic.size() >= 4 &&")
-eden_patch(ips_source
-    "    auto in_data = in->ReadAllBytes();\n    auto const type = IdentifyMagic(in_data);\n    if (type == IPSFileType::Error)\n        return nullptr;"
-    "    auto const type = IdentifyMagic(ips->ReadBytes(0x5));\n    if (type == IPSFileType::Error)\n        return nullptr;\n    auto in_data = in->ReadAllBytes();\n    if (in_data.empty())\n        return nullptr;")
-eden_patch(ips_source
-    "struct IPSwitchRecord {\n    std::array<uint8_t, 256 - sizeof(size_t)> data;\n    size_t count;\n};"
-    "struct IPSwitchRecord {\n    std::vector<uint8_t> data;\n};")
 set(ips_escape_begin "static IPSwitchRecord EscapeStringSequences(std::string_view sv) {")
 set(ips_escape_end "void IPSwitchCompiler::Parse(")
 string(FIND "${ips_source}" "${ips_escape_begin}" ips_escape_at)
@@ -1383,10 +1560,6 @@ static IPSwitchRecord EscapeStringSequences(std::string_view sv) {
 
 ]=])
 set(ips_source "${ips_before}${ips_escape}${ips_after}")
-eden_patch(ips_source
-    "                    std::memcpy(r.data.data(), hs.data(), hs.size());\n                    r.count = hs.size();"
-    "                    r.data.assign(hs.begin(), hs.end());")
-eden_patch(ips_source "auto replace_size = record.second.count;" "auto replace_size = record.second.data.size();")
 eden_patch(ips_source "        if (line.size() > 2 && line[0] == '@') {\n            switch (line[1]) {"
     "        if (line.size() > 2 && line[0] == '@') {\n            if (!IsPatchFlag(line)) return true;\n            switch (line[1]) {")
 eden_patch(ips_source "        } else if (patches.empty()) {\n            LOG_WARNING(Loader, \"Invalid line not in a patch {}\", line);"
@@ -1457,7 +1630,7 @@ write_derived("${PORT_BUILD_DIR}/vi_conductor.cpp" "${conductor_source}")
 if(DEFINED dev_producer_source)
     set(producer_source "${dev_producer_source}")
 else()
-    file(READ "${PROJECT_SOURCE_DIR}/src/core/hle/service/nvnflinger/buffer_queue_producer.cpp" producer_source)
+    set(producer_source "#include \"${EDEN_PORT_DIR}/guest_clock.h\"\n${producer_source}")
 endif()
 write_derived("${PORT_BUILD_DIR}/buffer_queue_producer.cpp" "${producer_source}")
 get_target_property(core_sources core SOURCES)
@@ -1508,7 +1681,25 @@ set(slab_header "core/hle/kernel/k_slab_heap.h")
 file(READ "${PROJECT_SOURCE_DIR}/src/${slab_header}" slab_source)
 string(REPLACE "    void Free(T* obj) {\n        BaseHeap::Free(obj);"
     "    void Free(T* obj) {\n        std::destroy_at(obj);\n        BaseHeap::Free(obj);" slab_source "${slab_source}")
+# The slab heap's lock and a thread's context guard stay spin locks (headless/kernel_spin_lock.h).
+set(slab_lock "    std::mutex m_lock;\n")
+string(FIND "${slab_source}" "${slab_lock}" slab_lock_at)
+if(slab_lock_at LESS 0)
+    message(FATAL_ERROR "Pinned slab heap lock changed")
+endif()
+string(REPLACE "${slab_lock}" "    ::Eden::KernelSpinLock m_lock;\n" slab_source "${slab_source}")
+string(PREPEND slab_source "#include \"${EDEN_PORT_DIR}/kernel_spin_lock.h\"\n")
 write_derived("${PORT_BUILD_DIR}/include/${slab_header}" "${slab_source}")
+set(thread_header "core/hle/kernel/k_thread.h")
+file(READ "${PROJECT_SOURCE_DIR}/src/${thread_header}" thread_source)
+set(thread_guard "    std::mutex m_context_guard{};\n")
+string(FIND "${thread_source}" "${thread_guard}" thread_guard_at)
+if(thread_guard_at LESS 0)
+    message(FATAL_ERROR "Pinned thread context guard changed")
+endif()
+string(REPLACE "${thread_guard}" "    ::Eden::KernelSpinLock m_context_guard{};\n" thread_source "${thread_source}")
+string(PREPEND thread_source "#include \"${EDEN_PORT_DIR}/kernel_spin_lock.h\"\n")
+write_derived("${PORT_BUILD_DIR}/include/${thread_header}" "${thread_source}")
 
 # PostDestroy can release an owner process and enter the scheduler using the
 # current dummy thread's mutex. Keep that thread alive through this cleanup.
@@ -1535,7 +1726,69 @@ if(finish_offset LESS 0)
     message(FATAL_ERROR "Pinned thread termination changed; review finalization lock scope.")
 endif()
 string(REPLACE "${old_finish}" "        {\n            KScopedSchedulerLock sl{kernel};\n            m_signaled = true;\n            KSynchronizationObject::NotifyAvailable(kernel);\n        }\n\n        // Finalization may block; scheduling must be enabled here.\n        this->Close(kernel);" thread_source "${thread_source}")
-write_derived("${PORT_BUILD_DIR}/k_thread.cpp" "${thread_source}")
+
+# Which guest thread was blocked, on what, and for how long. A core with nothing to run reads the
+# same whether its thread is asleep until a timeout or waiting on something only the GPU thread can
+# signal, and only one of those is ours to fix. BeginWait stamps the thread; SetState is the single
+# place the wait reason is cleared, so the reason read there is the one the wait actually ran under.
+set(wait_begin [=[    void KThread::BeginWait(KernelCore& kernel, KThreadQueue* queue) {
+        // Set our state as waiting.
+        this->SetState(kernel, ThreadState::Waiting);
+
+        // Set our wait queue.
+        m_wait_queue = queue;
+    }]=])
+string(FIND "${thread_source}" "${wait_begin}" wait_begin_at)
+if(wait_begin_at LESS 0)
+    message(FATAL_ERROR "Pinned KThread::BeginWait changed")
+endif()
+string(REPLACE "${wait_begin}" [=[    void KThread::BeginWait(KernelCore& kernel, KThreadQueue* queue) {
+        // Set our state as waiting.
+        this->SetState(kernel, ThreadState::Waiting);
+
+        // Set our wait queue.
+        m_wait_queue = queue;
+
+        // No name lookup here: this runs under the scheduler lock, and a thread's name lives in
+        // guest memory. Every thread that matters sends requests, so the IPC path names it.
+        // Counted in development builds only (performance.h, dev_marks).
+        if (::Eden::Performance::dev_marks.load(std::memory_order_relaxed))
+            ::Eden::Performance::WaitBegin(GetThreadId(), ::Eden::Performance::NowNs());
+    }]=] thread_source "${thread_source}")
+
+set(wait_end [=[    void KThread::SetState(KernelCore& kernel, ThreadState state) {
+        KScopedSchedulerLock sl{kernel};
+        // Clear debugging state
+        this->SetWaitReasonForDebugging({});
+        const ThreadState old_state = m_thread_state.load(std::memory_order_relaxed);]=])
+string(FIND "${thread_source}" "${wait_end}" wait_end_at)
+if(wait_end_at LESS 0)
+    message(FATAL_ERROR "Pinned KThread::SetState changed")
+endif()
+string(REPLACE "${wait_end}" [=[    void KThread::SetState(KernelCore& kernel, ThreadState state) {
+        KScopedSchedulerLock sl{kernel};
+        // Close any wait this thread was under. SetState is the only place the reason is cleared,
+        // so reading it here attributes the wait to the reason it ran under (performance.h).
+        const bool marks = ::Eden::Performance::dev_marks.load(std::memory_order_relaxed);
+        if (const auto wait_reason = this->GetWaitReasonForDebugging();
+            marks && wait_reason != ThreadWaitReasonForDebugging::None) {
+            const auto* waker = GetCurrentThreadPointer(kernel);
+            ::Eden::Performance::WaitEnd(GetThreadId(), static_cast<unsigned>(wait_reason),
+                                         ::Eden::Performance::NowNs(),
+                                         waker ? waker->GetThreadId() : 0);
+        }
+        // Clear debugging state
+        this->SetWaitReasonForDebugging({});
+        const ThreadState old_state = m_thread_state.load(std::memory_order_relaxed);
+        // Only the transition into Runnable is stamped: a thread already running that gets
+        // re-marked Runnable must not report its own remaining execution as time spent waiting to
+        // be scheduled (performance.h).
+        if (marks && (old_state & ThreadState::Mask) != ThreadState::Runnable &&
+            (state & ThreadState::Mask) == ThreadState::Runnable) {
+            ::Eden::Performance::NoteRunnable(GetThreadId(), ::Eden::Performance::NowNs());
+        }]=] thread_source "${thread_source}")
+
+write_derived("${PORT_BUILD_DIR}/k_thread.cpp" "#include \"${EDEN_PORT_DIR}/performance.h\"\n${thread_source}")
 get_target_property(core_sources core SOURCES)
 list(REMOVE_ITEM core_sources hle/kernel/k_thread.cpp)
 list(APPEND core_sources "${PORT_BUILD_DIR}/k_thread.cpp")
@@ -1905,7 +2158,7 @@ set(audio_contract "${PORT_ROOT}/third_party")
 file(SHA256 "${pad_contract}/ps5_pad.hpp" pad_hash)
 file(SHA256 "${audio_contract}/native_audio.hpp" audio_hash)
 if(NOT pad_hash STREQUAL "6a9708fe7ab59afa69899e1981e84decf1492a97e8ebd08194f8e27841a00ee0" OR
-   NOT audio_hash STREQUAL "5274633c4f7cd4598fc4cdbfe5b044cbfca908845eb22157e73a80dca8faa0f6")
+   NOT audio_hash STREQUAL "54627379f641d608a9a5c6a96ebdfc543a0dbb8a1e843e0ce08cb6e3adb93528")
     message(FATAL_ERROR "Native device contracts changed; review the adapter ABI first.")
 endif()
 # Guest rumble: with no mapped buttons (this frontend binds the virtual_gamepad engine), send each
@@ -2009,7 +2262,12 @@ file(REMOVE "${PORT_BUILD_DIR}/include/video_core/buffer_cache/buffer_cache_base
 # Join the worker before its renderer/context and scheduler are destroyed.
 # C++ members are destroyed in reverse declaration order.
 file(READ "${PROJECT_SOURCE_DIR}/src/video_core/gpu.cpp" gpu_source)
-string(REPLACE ": gpu_thread{system_}\n        , system{system_}" ": system{system_}" gpu_source "${gpu_source}")
+set(gpu_first_members ": system{system_}\n        , gpu_thread{system_}")
+string(FIND "${gpu_source}" "${gpu_first_members}" gpu_first_members_at)
+if(gpu_first_members_at LESS 0)
+    message(FATAL_ERROR "Pinned GPU member order changed")
+endif()
+string(REPLACE "${gpu_first_members}" ": system{system_}" gpu_source "${gpu_source}")
 string(REPLACE ", is_async{is_async_}" ", is_async{is_async_}\n        , gpu_thread{system_}" gpu_source "${gpu_source}")
 string(REPLACE "    // Destruction of thread must be done before all (non trivial)\n    // previous members has been destroyed\n    VideoCommon::GPUThread::ThreadManager gpu_thread;\n" "" gpu_source "${gpu_source}")
 string(REPLACE "    u64 pending_composite_fence{};" "    u64 pending_composite_fence{};\n    VideoCommon::GPUThread::ThreadManager gpu_thread;" gpu_source "${gpu_source}")
@@ -2105,6 +2363,13 @@ if(EDEN_PS5_OPENGL)
         string(REPLACE "    });\n}" "}" gpu_worker "${gpu_worker}")
         string(REPLACE "thread.get_stop_token()" "stop_source.get_token()" gpu_worker "${gpu_worker}")
         string(REPLACE "ThreadManager::~ThreadManager() = default;" "ThreadManager::~ThreadManager() { Stop(); }" gpu_worker "${gpu_worker}")
+        # Eden's own shutdown of its std::jthread worker: the worker here is a pthread, ended by Stop.
+        set(worker_shutdown "void ThreadManager::NotifyShutdown() {\n    if (thread.joinable()) {\n        thread.request_stop();\n        thread.join();\n    }\n}")
+        string(FIND "${gpu_worker}" "${worker_shutdown}" worker_shutdown_at)
+        if(worker_shutdown_at LESS 0)
+            message(FATAL_ERROR "Pinned GPU worker shutdown changed")
+        endif()
+        string(REPLACE "${worker_shutdown}" "void ThreadManager::NotifyShutdown() { Stop(); }" gpu_worker "${gpu_worker}")
         string(REPLACE "        CommandDataContainer next;" "        unsigned dispatches = 0;\n        CommandDataContainer next;" gpu_worker "${gpu_worker}")
         set(dispatch_call "                scheduler.Push(system.GPU(), submit_list->channel, std::move(submit_list->entries));")
         string(REPLACE "${dispatch_call}"
@@ -2159,7 +2424,9 @@ if(EDEN_PS5_OPENGL)
     string(REPLACE "    ~Impl() = default;" "    ~Impl() { gpu_thread.Stop(); if (renderer && Settings::IsOpenGL()) { renderer->Context().MakeCurrent(); glFinish(); } }" gpu_source "${gpu_source}")
     # Join before unique_ptr destruction clears GPU::impl: queued draws call back
     # through GPU::TickWork. NotifyShutdown also protects service-owned state.
-    set(old_gpu_shutdown "    void NotifyShutdown() {\n        std::unique_lock lk{sync_mutex};\n        shutting_down.store(true, std::memory_order::relaxed);\n        sync_cv.notify_all();\n    }")
+    # Eden joins its worker first; here the waiters are woken first, so that a guest thread waiting
+    # on the worker cannot keep it from ending.
+    set(old_gpu_shutdown "    void NotifyShutdown() {\n        gpu_thread.NotifyShutdown();\n        std::unique_lock lk{sync_mutex};\n        shutting_down.store(true, std::memory_order::relaxed);\n        sync_cv.notify_all();\n    }")
     string(FIND "${gpu_source}" "${old_gpu_shutdown}" gpu_shutdown_offset)
     if(gpu_shutdown_offset LESS 0)
         message(FATAL_ERROR "Pinned GPU shutdown changed")
@@ -2328,6 +2595,64 @@ if(EDEN_DEV_PROFILE)
     list(REMOVE_ITEM video_sources engines/maxwell_3d.cpp)
     list(APPEND video_sources "${PORT_BUILD_DIR}/maxwell_3d.cpp")
 endif()
+# The shader cache file's reader checks what it reads and keeps the whole entries of a damaged
+# file (shader_cache_reader.inc; shader_cache_check.cpp checks it on the host).
+file(READ "${PROJECT_SOURCE_DIR}/src/video_core/shader_environment.cpp" shader_environment_source)
+string(FIND "${shader_environment_source}" "void LoadPipelines(" shader_reader_begin)
+string(FIND "${shader_environment_source}" "} // namespace VideoCommon" shader_reader_end REVERSE)
+if(shader_reader_begin LESS 0 OR shader_reader_end LESS shader_reader_begin)
+    message(FATAL_ERROR "Pinned shader cache reader changed")
+endif()
+string(SUBSTRING "${shader_environment_source}" 0 ${shader_reader_begin} shader_environment_head)
+string(SUBSTRING "${shader_environment_source}" ${shader_reader_end} -1 shader_environment_tail)
+string(PREPEND shader_environment_head "#include <cstdio>\n#include <new>\n#include <stdexcept>\n#include <system_error>\n")
+write_derived("${PORT_BUILD_DIR}/shader_environment.cpp"
+    "${shader_environment_head}#include \"${EDEN_PORT_DIR}/shader_cache_reader.inc\"\n\n${shader_environment_tail}")
+set_property(SOURCE "${PORT_BUILD_DIR}/shader_environment.cpp" APPEND PROPERTY OBJECT_DEPENDS
+    "${EDEN_PORT_DIR}/shader_cache_reader.inc")
+# Eden recompresses an ASTC texture to BC1 or BC3 a mip level at a time: every layer of the level
+# is decoded into one buffer, four bytes a pixel, and then compressed. For a texture array of 121
+# layers that buffer is 484 MiB, asked of the pool the CPU shares with the GPU at the moment a game
+# loads new textures (a session ended there with the pool at 620 MiB in one piece), and the heap
+# keeps what it grew by. A layer at a time needs 4 MiB and writes the same bytes: both steps
+# already work layer by layer, each layer at its own offset.
+file(READ "${PROJECT_SOURCE_DIR}/src/video_core/texture_cache/util.cpp" texture_util_source)
+set(recompress_old [=[            decode_scratch.resize_destructive(level_size);
+
+            Tegra::Texture::ASTC::Decompress(
+                input_offset, copy.image_extent.width, copy.image_extent.height,
+                copy.image_subresource.num_layers * copy.image_extent.depth, tile_size.width,
+                tile_size.height, decode_scratch);
+
+            compress(decode_scratch, copy.image_extent.width, copy.image_extent.height,
+                     copy.image_subresource.num_layers * copy.image_extent.depth,
+                     output.subspan(output_offset));
+]=])
+string(FIND "${texture_util_source}" "${recompress_old}" recompress_at)
+if(recompress_at LESS 0)
+    message(FATAL_ERROR "Pinned ASTC recompression changed (texture_cache/util.cpp, ConvertImage)")
+endif()
+string(REPLACE "${recompress_old}" [=[            // A layer at a time (headless/CMakeLists.txt): ASTC blocks are 16 bytes, BC blocks
+            // cover 4x4 pixels.
+            const u32 layers = copy.image_subresource.num_layers * copy.image_extent.depth;
+            const u32 layer_input = Common::DivideUp(copy.image_extent.width, tile_size.width) *
+                                    Common::DivideUp(copy.image_extent.height, tile_size.height) * 16;
+            const u32 layer_output = Common::AlignUp(copy.image_extent.width, 4) *
+                                     Common::AlignUp(copy.image_extent.height, 4) / bpp_div;
+            decode_scratch.resize_destructive(level_size / (std::max)(layers, 1u));
+            for (u32 layer = 0; layer < layers; ++layer) {
+                Tegra::Texture::ASTC::Decompress(
+                    input_offset.subspan(layer * layer_input), copy.image_extent.width,
+                    copy.image_extent.height, 1, tile_size.width, tile_size.height, decode_scratch);
+                compress(decode_scratch, copy.image_extent.width, copy.image_extent.height, 1,
+                         output.subspan(output_offset + layer * layer_output));
+            }
+]=] texture_util_source "${texture_util_source}")
+write_derived("${PORT_BUILD_DIR}/texture_cache_util.cpp" "${texture_util_source}")
+list(REMOVE_ITEM video_sources texture_cache/util.cpp)
+list(APPEND video_sources "${PORT_BUILD_DIR}/texture_cache_util.cpp")
+list(REMOVE_ITEM video_sources shader_environment.cpp)
+list(APPEND video_sources "${PORT_BUILD_DIR}/shader_environment.cpp")
 set_property(TARGET video_core PROPERTY SOURCES "${video_sources}")
 
 if(PS5_NATIVE)
@@ -2415,8 +2740,8 @@ ${fs_service}")
     write_derived("${PORT_BUILD_DIR}/filesystem.cpp" "${fs_service}")
     list(REMOVE_ITEM core_sources hle/service/filesystem/filesystem.cpp)
     list(APPEND core_sources "${PORT_BUILD_DIR}/filesystem.cpp")
-    list(REMOVE_ITEM core_sources internal_network/network.cpp)
-    file(READ "${PROJECT_SOURCE_DIR}/src/core/internal_network/network.cpp" network_source)
+    list(REMOVE_ITEM core_sources internal_network/network.cpp "${MULTIPLAYER_OUTPUT}/socket_network.cpp")
+    file(READ "${MULTIPLAYER_OUTPUT}/socket_network.cpp" network_source)
     string(REPLACE "namespace Network {" "namespace Network {\n#ifndef IPPROTO_DCCP\nconstexpr int IPPROTO_DCCP = 33;\n#endif" network_source "${network_source}")
     # Native pipes can be created but fail their first byte write with ENOMEM.
     # Preserve Eden's poll/write/read wakeup design using a local socket pair.
@@ -2468,8 +2793,8 @@ void Initialize() {
     list(APPEND core_sources "${PORT_BUILD_DIR}/network.cpp")
     # Reuse the getifaddrs path instead of newer BSD route-format helpers.
     # Keep its existing zero-gateway fallback; PS5 route discovery is unqualified.
-    list(REMOVE_ITEM core_sources internal_network/network_interface.cpp)
-    file(READ "${PROJECT_SOURCE_DIR}/src/core/internal_network/network_interface.cpp" interfaces_source)
+    list(REMOVE_ITEM core_sources internal_network/network_interface.cpp "${MULTIPLAYER_OUTPUT}/network_interface.cpp")
+    file(READ "${MULTIPLAYER_OUTPUT}/network_interface.cpp" interfaces_source)
     string(REPLACE "defined(__linux__) || defined(__ANDROID__)" "defined(__linux__) || defined(__ANDROID__) || defined(__FreeBSD__)" interfaces_source "${interfaces_source}")
     string(REPLACE "defined(__ANDROID__) || defined(__linux__)" "defined(__ANDROID__) || defined(__linux__) || defined(__FreeBSD__)" interfaces_source "${interfaces_source}")
     string(REPLACE "#ifdef __ANDROID__" "#if defined(__ANDROID__) || defined(__FreeBSD__)" interfaces_source "${interfaces_source}")
@@ -2544,7 +2869,7 @@ void Initialize() {
         "${EDEN_PORT_DIR}/heap_pages.cpp" "${EDEN_PORT_DIR}/performance.cpp"
         "${EDEN_PORT_DIR}/crash_report.cpp" "${EDEN_PORT_DIR}/stop_limit.cpp"
         "${EDEN_PORT_DIR}/elevation/elevation.cpp"
-        "${eden_app_crt}" "${PORT_ROOT}/src/lifecycle.c"
+        "${eden_app_crt}" "${PORT_ROOT}/src/lifecycle.c" "${PORT_ROOT}/src/direct_memory.c"
         "${PORT_BUILD_DIR}/app_heap.c")
     target_compile_definitions(eden-headless PRIVATE PS5_NATIVE=1)
     # EDEN_BUILD commit=: the first log line of every session names the build that runs.
@@ -2584,6 +2909,10 @@ else()
     target_link_libraries(eden-memory-check PRIVATE dynarmic common)
     target_compile_options(eden-scalar-check PRIVATE -fno-rtti)
     add_executable(eden-ryujinx-check "${EDEN_PORT_DIR}/ryujinx_check.cpp")
+    add_executable(eden-shader-cache-check "${EDEN_PORT_DIR}/shader_cache_check.cpp")
+    target_include_directories(eden-shader-cache-check PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    target_link_libraries(eden-shader-cache-check PRIVATE video_core)
+    target_compile_options(eden-shader-cache-check PRIVATE -fno-rtti)
     add_executable(eden-mods-check "${EDEN_PORT_DIR}/mods_check.cpp")
     target_include_directories(eden-mods-check PRIVATE "${PROJECT_SOURCE_DIR}/src")
     target_link_libraries(eden-mods-check PRIVATE core)
@@ -2602,11 +2931,19 @@ else()
     add_executable(eden-profiles-check "${EDEN_PORT_DIR}/profiles_check.cpp")
     target_link_libraries(eden-profiles-check PRIVATE core)
     target_compile_options(eden-profiles-check PRIVATE -UNDEBUG)
+    # save-sync.json kept in step with the profiles (save_sync_config.h).
+    add_executable(eden-save-sync-check "${EDEN_PORT_DIR}/save_sync_check.cpp")
+    target_link_libraries(eden-save-sync-check PRIVATE core)
+    target_compile_options(eden-save-sync-check PRIVATE -UNDEBUG)
     # The update check's decision, without its network side (update_notice.h).
     add_executable(eden-update-check
         "${EDEN_PORT_DIR}/update_check_check.cpp" "${EDEN_PORT_DIR}/update_check/update_check.c")
     target_compile_definitions(eden-update-check PRIVATE UPDATE_CHECK_NO_NETWORK=1)
     target_compile_options(eden-update-check PRIVATE -UNDEBUG)
+    # The self-update helper keeps the version it replaces: moving it to where it is kept.
+    add_executable(eden-update-files-check
+        "${EDEN_PORT_DIR}/self_update_files_check.cpp" "${EDEN_PORT_DIR}/self_update_helper/files.cpp")
+    target_include_directories(eden-update-files-check PRIVATE "${EDEN_PORT_DIR}")
 endif()
 target_include_directories(eden-headless PRIVATE "${PROJECT_SOURCE_DIR}/src")
 # The app version has one home, sce_sys/param.json (contentVersion), which the package carries as
@@ -2621,6 +2958,15 @@ write_derived("${PORT_BUILD_DIR}/version/app_version.h"
     "// Generated from sce_sys/param.json (contentVersion).\n#pragma once\n#define EDEN_APP_VERSION \"${app_version}\"\n")
 target_include_directories(eden-headless PRIVATE "${PORT_BUILD_DIR}/version")
 target_link_libraries(eden-headless PRIVATE core eden-pad)
+# A game's text entry on the PS5's own on-screen keyboard (system_keyboard.h, keyboard_applet.h).
+target_sources(eden-headless PRIVATE "${EDEN_PORT_DIR}/system_keyboard.cpp")
+target_sources(eden-headless PRIVATE "${EDEN_PORT_DIR}/multiplayer.cpp")
+target_include_directories(eden-headless BEFORE PRIVATE "${MULTIPLAYER_SOCKET_HEADERS}" "${MULTIPLAYER_OUTPUT}")
+if(PS5_NATIVE)
+    target_link_libraries(eden-headless PRIVATE
+        "${sdk}/target/lib/libSceImeDialog.so" "${sdk}/target/lib/libSceSysmodule.so"
+        "${PORT_ROOT}/build/stubs/libSceCommonDialog.so")
+endif()
 add_library(eden-metadata STATIC "${EDEN_PORT_DIR}/metadata_bridge.cpp")
 target_include_directories(eden-metadata PUBLIC "${EDEN_PORT_DIR}" PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(eden-metadata PUBLIC core stb)
@@ -2694,14 +3040,14 @@ if(EDEN_PS5_OPENGL)
         message(FATAL_ERROR "PS5 graphics requires the native OpenGL build")
     endif()
     # The pinned PS5 OpenGL 4.6 SDK release (tools/deps.json, make deps).
-    set(gl46 "${PORT_ROOT}/.deps/ps5-opengl-sdk-1.0.0/sdk")
-    set(gl46_expected "d0c5accb58e07f1359fecfd9e4313df08acb86af71fb80052da3e9f06203fdc8")
+    set(gl46 "${PORT_ROOT}/.deps/ps5-opengl-sdk-1.0.2/sdk")
+    set(gl46_expected "7fd5d7a1beb7bf5af42e6a6936b88b1266cba3f224d3a60c3a6a09285e339ae1")
     if(NOT EXISTS "${gl46}/lib/libps5_opengl_core33.a")
         message(FATAL_ERROR "Missing the PS5 OpenGL SDK in ${gl46}; run make deps")
     endif()
     file(SHA256 "${gl46}/lib/libps5_opengl_core33.a" gl46_hash)
     if(EDEN_DEV_PROFILE)
-        target_compile_definitions(eden-headless PRIVATE EDEN_DEV_GL_VERSION="${gl46_hash}-sdk-1.0.0")
+        target_compile_definitions(eden-headless PRIVATE EDEN_DEV_GL_VERSION="${gl46_hash}-sdk-1.0.2")
     endif()
     if(NOT gl46_hash STREQUAL gl46_expected)
         message(FATAL_ERROR "Frozen OpenGL 4.6 runtime changed")
@@ -2711,12 +3057,12 @@ if(EDEN_PS5_OPENGL)
     target_sources(eden-headless PRIVATE "${EDEN_PORT_DIR}/graphics.cpp")
     # The loading screen's shader as a string for the OpenGL window; the Vulkan HUD pass includes
     # the same two files (vulkan_hud.frag).
-    file(READ "${EDEN_PORT_DIR}/loading_wordmark.glsl" loading_wordmark)
+    file(READ "${EDEN_PORT_DIR}/loading_text.glsl" loading_wordmark)
     file(READ "${EDEN_PORT_DIR}/loading_scene.glsl" loading_scene)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-        "${EDEN_PORT_DIR}/loading_wordmark.glsl" "${EDEN_PORT_DIR}/loading_scene.glsl")
+        "${EDEN_PORT_DIR}/loading_text.glsl" "${EDEN_PORT_DIR}/loading_scene.glsl")
     write_derived("${PORT_BUILD_DIR}/include/loading_scene_glsl.h"
-        "// Generated from loading_wordmark.glsl and loading_scene.glsl.\n#pragma once\ninline constexpr const char* kLoadingSceneGlsl = R\"glsl(\n${loading_wordmark}${loading_scene})glsl\";\n")
+        "// Generated from loading_text.glsl and loading_scene.glsl.\n#pragma once\ninline constexpr const char* kLoadingSceneGlsl = R\"glsl(\n${loading_wordmark}${loading_scene})glsl\";\n")
     target_compile_definitions(eden-headless PRIVATE EDEN_PS5_OPENGL=1)
     target_link_libraries(eden-headless PRIVATE PS5OpenGL::OpenGL glad)
 endif()
@@ -2730,6 +3076,7 @@ endif()
         target_include_directories(eden-headless PRIVATE "${launcher_dir}" "${PORT_ROOT}/third_party")
         if(EDEN_PS5_OPENGL)
             set(launcher_sources
+                "${EDEN_PORT_DIR}/multiplayer_directory.cpp"
                 "${launcher_dir}/frontend.cpp"
                 "${launcher_dir}/eden_services.cpp"
                 "${launcher_dir}/pe/audio/mixer.cpp"
@@ -2749,14 +3096,59 @@ endif()
                 "${launcher_dir}/pe/ui/browse.cpp"
                 "${launcher_dir}/pe/ui/game_options.cpp"
                 "${launcher_dir}/pe/ui/profiles.cpp"
+                "${launcher_dir}/pe/ui/remote.cpp"
+                "${launcher_dir}/pe/ui/save_sync.cpp"
+                "${launcher_dir}/pe/ui/pairing.cpp"
+                "${launcher_dir}/pe/ui/multiplayer.cpp"
+                "${launcher_dir}/pe/ui/qr_code.cpp"
                 "${launcher_dir}/pe/ui/update.cpp"
                 "${launcher_dir}/pe/ui/home.cpp"
                 "${launcher_dir}/pe/ui/launcher.cpp"
                 "${launcher_dir}/pe/ui/library.cpp"
                 "${launcher_dir}/pe/ui/settings.cpp"
+                "${launcher_dir}/pe/ui/shell.cpp"
                 "${launcher_dir}/pe/ui/textures.cpp"
+                "${launcher_dir}/pe/ui/theme.cpp"
+                "${launcher_dir}/pe/ui/theme_kit.cpp"
                 "${launcher_dir}/pe/ui/widgets.cpp")
+            # The launcher's themes start from the theme recipes of the UI kit (ps5-homebrew-ui), fetched
+            # at its pinned commit: its theme table is compiled in, and seen by theme_kit.cpp alone.
+            set(ui_kit "${PORT_ROOT}/.deps/ps5-homebrew-ui-aed286b8/src")
+            if(NOT EXISTS "${ui_kit}/ui/theme.cpp")
+                message(FATAL_ERROR "Missing the UI kit's theme table in ${ui_kit}; run make deps")
+            endif()
+            list(APPEND launcher_sources "${ui_kit}/ui/theme.cpp")
+            set_source_files_properties("${ui_kit}/ui/theme.cpp" "${launcher_dir}/pe/ui/theme_kit.cpp"
+                PROPERTIES INCLUDE_DIRECTORIES "${ui_kit}")
             target_sources(eden-headless PRIVATE ${launcher_sources})
+            # Download sources and their queue (remote/remote.h), with their backends (remote/source.h,
+            # backends.h) and the console's FTP server that writes the files (remote/ftp.h); their
+            # HTTP (remote/http.c) is linked into the update check's object below, with its libcurl.
+            target_sources(eden-headless PRIVATE
+                "${EDEN_PORT_DIR}/remote/remote.cpp"
+                "${EDEN_PORT_DIR}/remote/backends.cpp"
+                "${EDEN_PORT_DIR}/remote/ftp.cpp"
+                "${EDEN_PORT_DIR}/remote/stream_check.cpp"
+                "${EDEN_PORT_DIR}/remote/save_archive.cpp"
+                "${EDEN_PORT_DIR}/remote/save_sync.cpp"
+                "${EDEN_PORT_DIR}/remote/romm/romm_client.cpp"
+                "${EDEN_PORT_DIR}/remote/romm/romm_saves.cpp"
+                "${EDEN_PORT_DIR}/remote/romm/romm_source.cpp")
+            # The save data's zips (remote/save_archive.h): miniz, as the self-update helper has it.
+            add_library(prosperoeden-miniz STATIC
+                "${PORT_ROOT}/third_party/miniz/miniz.c"
+                "${PORT_ROOT}/third_party/miniz/miniz_tdef.c"
+                "${PORT_ROOT}/third_party/miniz/miniz_tinfl.c"
+                "${PORT_ROOT}/third_party/miniz/miniz_zip.c")
+            target_include_directories(prosperoeden-miniz PUBLIC "${PORT_ROOT}/third_party/miniz")
+            target_compile_options(prosperoeden-miniz PRIVATE -w)
+            target_link_libraries(eden-headless PRIVATE prosperoeden-miniz)
+            # Their MD5 is OpenSSL's (linked below for the update check), as is the SHA-256 a
+            # download's contents are checked with (remote/stream_check.h). Its include folder, for
+            # these files only: the prefix it is in has older FFmpeg headers as well.
+            set_source_files_properties("${EDEN_PORT_DIR}/remote/save_archive.cpp"
+                "${EDEN_PORT_DIR}/remote/stream_check.cpp"
+                PROPERTIES INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}")
             # The update check (update_notice.h). Its network side is the boilerplate's
             # update_check.c and console_curl.c with libcurl and libpsl from the pinned PacBrew
             # prefix that already supplies OpenSSL and zlib (zstd is Eden's own). They are linked
@@ -2777,8 +3169,9 @@ endif()
                 "${EDEN_PORT_DIR}/update_check/console_curl.c"
                 "${EDEN_PORT_DIR}/update_check/self_update.c"
                 "${EDEN_PORT_DIR}/update_check/self_update_ps5.c"
-                "${EDEN_PORT_DIR}/update_check/self_update_sha256.c")
-            target_include_directories(update-check PRIVATE "${OPENSSL_INCLUDE_DIR}")
+                "${EDEN_PORT_DIR}/update_check/self_update_sha256.c"
+                "${EDEN_PORT_DIR}/remote/http.c")
+            target_include_directories(update-check PRIVATE "${OPENSSL_INCLUDE_DIR}" "${EDEN_PORT_DIR}/update_check")
             # The kit's paths are the app's own: after elevation /app0 and /download0 are gone
             # (update_notice.cpp gives them).
             target_compile_definitions(update-check PRIVATE CURL_STATICLIB=1

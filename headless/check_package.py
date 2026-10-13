@@ -21,9 +21,13 @@ BASE_REQUIRED = {'eboot.bin', 'core-homebrew.nro', 'sce_module/libc.prx',
             'self-updater.elf'}
 REQUIRED = set(BASE_REQUIRED)
 REQUIRED.update(p.relative_to(APP).as_posix() for p in (APP / 'ui').rglob('*') if p.is_file())
+# The runner's switches (headless/main.cpp): only a development package carries them, so they
+# are required exactly when the build put them there (tools/package-headless-native.sh).
+if (APP / 'dev-settings.txt').is_file():
+    REQUIRED.add('dev-settings.txt')
 RECEIPT = ROOT / 'HEADLESS_CANDIDATE.json'
 # The pinned OpenGL SDK release (tools/deps.json): digest of its manifest.sha256.
-GL_SDK_MANIFEST_SHA256 = 'f4b91f672be037fbac3f82494f1225deaf4c227a03f37ac3ffa56abb213b943f'
+GL_SDK_MANIFEST_SHA256 = '0d432edc9d648d6e0cccb4d5eb3db8484f10ba4b075b5ccf23edda3251b66360'
 LAPY_PROTOCOL_SHA256 = 'bb02c4aa814eaba7a7a423a31b29ff41f786212c2953678cf29434e85fa0f869'
 
 
@@ -64,14 +68,14 @@ def check():
     runpy.run_path(str(ROOT / 'tools/load_alignment.py'))['check_load_alignment']((APP / 'eboot.bin').read_bytes())
     imports = (OUT / 'imports.txt').read_text()
     needed = sorted(imports.split('NeededLibraries [', 1)[1].split(']', 1)[0].split())
-    expected = ['libSceAudioOut.sprx', 'libSceLibcInternal.sprx', 'libSceNet.sprx',
-                'libScePad.sprx', 'libSceUserService.sprx', 'libkernel.sprx']
+    # libSceCommonDialog, libSceImeDialog and libSceSysmodule: the PS5 keyboard for a game's text
+    # entry (headless/system_keyboard.cpp); RADV loads system modules as well.
+    expected = ['libSceAudioOut.sprx', 'libSceCommonDialog.sprx', 'libSceImeDialog.sprx', 'libSceLibcInternal.sprx', 'libSceNet.sprx',
+                'libScePad.sprx', 'libSceSysmodule.sprx', 'libSceUserService.sprx', 'libkernel.sprx']
     if json.loads((OUT / 'frontend.json').read_text())['renderer'] == 'opengl-4.6-compatibility':
         assert b'[ps5-batch-summary] config gpu-present=1 multidraw=1 deferred=1 ' in (OUT / 'llvm-pie.elf').read_bytes(), 'SDK batching disabled or missing compiled receipt'
         expected += ['libSceAgc.prx', 'libSceAgcDriver.prx', 'libSceSystemService.sprx',
                      'libSceVideoOut.sprx']
-    if frontend.get('vulkan'):
-        expected.append('libSceSysmodule.sprx')
     if frontend.get('gpu_probe'):
         expected.remove('libSceNet.sprx')  # Guest networking is dead-stripped from this entry.
     assert needed == sorted(expected), needed
@@ -99,7 +103,7 @@ if __name__ == '__main__':
             if not p.startswith('../') or (ROOT / p).exists()]  # console tooling of a development layout
         frontend = json.loads((OUT / 'frontend.json').read_text())
         if frontend['renderer'] == 'opengl-4.6-compatibility':
-            sdk = ROOT / '.deps/ps5-opengl-sdk-1.0.0/sdk'
+            sdk = ROOT / '.deps/ps5-opengl-sdk-1.0.2/sdk'
             manifest = sdk / 'manifest.sha256'
             assert digest(manifest) == GL_SDK_MANIFEST_SHA256
             paths.append(manifest)
@@ -118,7 +122,8 @@ if __name__ == '__main__':
                 paths += [ROOT / 'build/vulkan-isolated' / name for name in
                           ('libps5vk.a', 'libpsbc.a', 'manifest.json')]
             paths.append(ROOT / 'build/stubs/libSceAgcDriver.so')
-        old = json.loads((ROOT / 'CANDIDATE.json').read_text())
+        legacy_receipt = ROOT / 'CANDIDATE.json'
+        old = json.loads(legacy_receipt.read_text()) if legacy_receipt.exists() else {'files': {}}
         previous = {p: old['files']['dist/PPSA99121/' + p]
                     for p in BASE_REQUIRED - {'core-homebrew.nro'}
                     if 'dist/PPSA99121/' + p in old['files']}

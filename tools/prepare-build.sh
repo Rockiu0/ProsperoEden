@@ -22,12 +22,20 @@ scratch=$(cat .local/headless-cache)
 [[ "$(cat "$scratch/owner")" == "$root" ]] || { echo "Build cache $scratch belongs to another checkout" >&2; exit 1; }
 
 eden="$scratch/source"
-if [[ ! -f $eden/CMakeLists.txt ]]; then
+eden_archive=eden-67bada77.tar.gz
+# A tree unpacked from another archive is the source of another Eden revision: it is unpacked
+# again (Eden's package cache, downloads only, is kept). A tree left from before an update of
+# the pin was built as if it were the new one, and what Eden had changed went unseen.
+if [[ ! -f $eden/CMakeLists.txt || $(cat "$eden/.unpacked-from" 2>/dev/null) != "$eden_archive" ]]; then
     step "Eden source"
+    if [[ -d $eden/.cache ]]; then rm -rf "$scratch/source-cache" && mv "$eden/.cache" "$scratch/source-cache"; fi
+    rm -rf "$eden"
     mkdir -p "$eden"
-    tar -xzf .deps/eden-5f142c79.tar.gz --strip-components=1 -C "$eden"
+    tar -xzf ".deps/$eden_archive" --strip-components=1 -C "$eden"
+    if [[ -d $scratch/source-cache ]]; then mv "$scratch/source-cache" "$eden/.cache"; fi
+    printf '%s\n' "$eden_archive" > "$eden/.unpacked-from"
 fi
-printf '%s\n' '5f142c7926d0c7fcbbd0ce30794d72f638a43b2a' > "$eden/GIT-COMMIT"
+printf '%s\n' '67bada77f8a43a90da2e94e89b8e7da73c256989' > "$eden/GIT-COMMIT"
 printf '%s\n' 'ps5-headless' > "$eden/GIT-REFSPEC"
 # Fixes to Eden's own source (tools/eden-patches, in name order), each applied once: a patch that
 # reverses cleanly is already in the tree. One that neither reverses nor applies was changed after
@@ -75,6 +83,7 @@ if [[ ! -f ../ps5-native-app-boilerplate/runtime/libc.prx ]]; then
 fi
 step "libSceAgcDriver link stub"
 bash tools/build-agc-driver-stub.sh
+bash tools/build-common-dialog-stub.sh
 # The driver's display code carries this repository's adaptation (tools/patch-radv-wsi.py): a
 # driver built with another version of it is built again (only the changed file compiles).
 # So is a driver built from another Mesa revision than tools/deps.json pins.
@@ -87,7 +96,7 @@ if [[ -f $radv_release/lib/libvulkan_radeon.ps5.a ]]; then
         bash tools/build-radv-dependencies.sh
         rm -f build/radv-isolated/libvulkan_radeon.ps5.a
     elif ! python3 -B tools/patch-radv-wsi.py --check "$radv_release/EDEN_WSI_SHA256"; then
-        step "RADV: the display code's adaptation changed"
+        step "RADV: this repository's adaptation of the driver changed"
         bash tools/build-radv-dependencies.sh
         rm -f build/radv-isolated/libvulkan_radeon.ps5.a
     fi

@@ -1,40 +1,31 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Release files from a built PPSA99008 folder (make release, make image).
+"""Release files from a built PPSA99008 folder (make release).
 
-  tools/ci/make-dist.py [--image-only] APP_DIR
+  tools/ci/make-dist.py APP_DIR
 
 dist/ProsperoEden-vX.Y.Z.zip (the folder plus README, LICENSE and THIRD_PARTY_NOTICES; fixed
-timestamps, so equal inputs give equal bytes), dist/ProsperoEden-vX.Y.Z.ffpfsc (the same title as
-a package image, tools/ci/package-image.sh), SHA256SUMS and release-notes.md (the README's
-"Changes in vX.Y.Z" section).
+timestamps, so equal inputs give equal bytes), SHA256SUMS (of the ZIP) and release-notes.md (the
+changelog's "vX.Y.Z" section, docs/CHANGELOG.md).
 """
 import hashlib
 import json
+import os
 import pathlib
 import re
 import shutil
-import subprocess
 import sys
 import zipfile
+from urllib.parse import urljoin
 
 root = pathlib.Path(__file__).resolve().parents[2]
 args = sys.argv[1:]
-image_only = args[:1] == ['--image-only']
-if image_only:
-    args = args[1:]
 if len(args) != 1:
     sys.exit(__doc__.strip())
 app = pathlib.Path(args[0]).resolve()
 version = json.loads((app / 'sce_sys/param.json').read_text())['contentVersion']
 tag = 'v' + version.removeprefix('0')
 dist = root / 'dist'
-image = dist / f'ProsperoEden-{tag}.ffpfsc'
-if image_only:
-    dist.mkdir(exist_ok=True)
-    subprocess.run(['bash', str(root / 'tools/ci/package-image.sh'), str(app), str(image)], check=True)
-    print(f'{image} {hashlib.sha256(image.read_bytes()).hexdigest()}')
-    sys.exit(0)
 shutil.rmtree(dist, ignore_errors=True)
 dist.mkdir()
 archive = dist / f'ProsperoEden-{tag}.zip'
@@ -55,9 +46,7 @@ with zipfile.ZipFile(archive) as check:
     if closed:
         sys.exit(f'ZIP entries not stored as 0777: {closed[:3]}')
 digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-subprocess.run(['bash', str(root / 'tools/ci/package-image.sh'), str(app), str(image)], check=True)
-image_digest = hashlib.sha256(image.read_bytes()).hexdigest()
-(dist / 'SHA256SUMS').write_text(f'{digest}  {archive.name}\n{image_digest}  {image.name}\n')
+(dist / 'SHA256SUMS').write_text(f'{digest}  {archive.name}\n')
 # The unstripped executable of this release, to name the functions in a crash report later
 # (tools/symbolize-crash.py). Kept out of dist/: it is not a release file.
 unstripped = root / 'build/headless-native/llvm-pie.elf'
@@ -66,11 +55,17 @@ if unstripped.exists():
     symbols.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(unstripped, symbols)
     print(f'{symbols} (keep it with the release: crash reports are read with it)')
-readme = (root / 'README.md').read_text()
-match = re.search(rf'^## Changes in {re.escape(tag)}\n(.*?)(?=^## )', readme, re.M | re.S)
+# The release notes: this version's section of the changelog. A link that is relative there (to
+# another guide, to another version) would lead nowhere on the release's page, so it is pointed
+# at the file as the tag has it.
+changelog = (root / 'docs/CHANGELOG.md').read_text()
+match = re.search(rf'^## {re.escape(tag)}\n(.*?)(?=^## |\Z)', changelog, re.M | re.S)
 if match:
-    (dist / 'release-notes.md').write_text(match.group(1).strip() + '\n')
+    repository = os.environ.get('GITHUB_REPOSITORY', 'blackbearreloaded/ProsperoEden')
+    here = f'https://github.com/{repository}/blob/{tag}/docs/CHANGELOG.md'
+    notes = re.sub(r'\]\((?!https?://|mailto:)([^)\s]+)\)', lambda link: f']({urljoin(here, link.group(1))})',
+                   match.group(1).strip())
+    (dist / 'release-notes.md').write_text(notes + '\n')
 else:
-    print(f'README.md has no "## Changes in {tag}" section; no release-notes.md', file=sys.stderr)
+    print(f'docs/CHANGELOG.md has no "## {tag}" section; no release-notes.md', file=sys.stderr)
 print(f'{archive} {digest}')
-print(f'{image} {image_digest}')
