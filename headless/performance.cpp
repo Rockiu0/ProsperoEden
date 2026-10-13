@@ -62,13 +62,13 @@ std::atomic<unsigned> pc_count{};
 std::array<uintptr_t, 65536> sampled_core_pcs{};
 // For a sample outside the executable (a system call stub): the first three words above the
 // interrupted stack pointer that point into the executable's code, its probable callers.
-std::array<std::array<uintptr_t, 3>, 65536> sampled_core_callers{};
+std::array<std::array<uintptr_t, 3>, 65536> sampled_core_stack_callers{};
 // The same samples' rax and rdi (the system call number before the syscall instruction) and the
 // six words at the top of the interrupted stack (the stub's caller in the system library first).
 std::array<std::array<uintptr_t, 20>, 65536> sampled_core_syscalls{};
 std::atomic<unsigned> core_pc_count{};
 unsigned core_pc_reported{};
-unsigned core_caller_reported{};
+unsigned core_stack_reported{};
 pthread_t core_sample_thread{};
 std::atomic<bool> core_sample_ready{};
 unsigned pc_reported{};
@@ -142,7 +142,7 @@ void PcSignal(int, siginfo_t*, void* context) {
             const auto* words = static_cast<const uintptr_t*>(context);
             const uintptr_t pc = words[224 / sizeof(uintptr_t)];
             sampled_core_pcs[core_index] = pc;
-            auto& callers = sampled_core_callers[core_index];
+            auto& callers = sampled_core_stack_callers[core_index];
             callers = {};
             // Firmware 6.02 mcontext: rsp at byte 248 (the C46 caller sampler's offset).
             if (pc >= 0x800000000ull && pc < 0x800100000ull) {
@@ -160,7 +160,6 @@ void PcSignal(int, siginfo_t*, void* context) {
             }
             core_pc_count.store(core_index + 1, std::memory_order_release);
 #if defined(EDEN_DEV_WAIT_CALLERS) && defined(PS5_NATIVE)
-            const uintptr_t pc = sampled_core_pcs[core_index];
             const unsigned caller_index = core_caller_count.load(std::memory_order_relaxed);
             // Library PCs only: eboot and the JIT caches identify themselves by address.
             if (caller_index < core_caller_pcs.size() &&
@@ -1086,14 +1085,14 @@ void Snapshot() {
     std::map<uintptr_t, unsigned> core_counts;
     const unsigned core_end = core_pc_count.load(std::memory_order_acquire);
     while (core_pc_reported < core_end) ++core_counts[sampled_core_pcs[core_pc_reported++]];
-    std::map<std::array<uintptr_t, 4>, unsigned> core_caller_counts;
-    for (unsigned i = core_caller_reported; i < core_end; ++i)
-        if (sampled_core_callers[i][0])
-            ++core_caller_counts[{sampled_core_pcs[i], sampled_core_callers[i][0], sampled_core_callers[i][1],
-                                  sampled_core_callers[i][2]}];
+    std::map<std::array<uintptr_t, 4>, unsigned> core_stack_caller_counts;
+    for (unsigned i = core_stack_reported; i < core_end; ++i)
+        if (sampled_core_stack_callers[i][0])
+            ++core_stack_caller_counts[{sampled_core_pcs[i], sampled_core_stack_callers[i][0], sampled_core_stack_callers[i][1],
+                                  sampled_core_stack_callers[i][2]}];
     // Up to 24 raw syscall samples per report: pc, rax, rdi, rsi, rdx and 16 stack words.
     unsigned raw_printed = 0;
-    for (unsigned i = core_caller_reported; i < core_end && raw_printed < 24; ++i)
+    for (unsigned i = core_stack_reported; i < core_end && raw_printed < 24; ++i)
         if (sampled_core_pcs[i] >= 0x800000000ull && sampled_core_pcs[i] < 0x800100000ull) {
             const auto& raw = sampled_core_syscalls[i];
             ++raw_printed;
@@ -1105,9 +1104,9 @@ void Snapshot() {
                 std::printf("%s%llx", w == 4 ? "" : ",", static_cast<unsigned long long>(raw[w]));
             std::printf("\n");
         }
-    core_caller_reported = core_end;
-    for (const auto& [key, count] : core_caller_counts)
-        std::printf("EDEN_PERF_CORE_CALLERS mono_ns=%lld pc=%llx callers=%llx,%llx,%llx count=%u\n", mono,
+    core_stack_reported = core_end;
+    for (const auto& [key, count] : core_stack_caller_counts)
+        std::printf("EDEN_PERF_CORE_STACK_CALLERS mono_ns=%lld pc=%llx callers=%llx,%llx,%llx count=%u\n", mono,
                     static_cast<unsigned long long>(key[0]), static_cast<unsigned long long>(key[1]),
                     static_cast<unsigned long long>(key[2]), static_cast<unsigned long long>(key[3]), count);
     for (const auto& [pc, count] : core_counts)

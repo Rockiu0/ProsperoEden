@@ -2,6 +2,19 @@
 
 What changed in each release of ProsperoEden, newest first. A release's notes on GitHub are its section here.
 
+## v1.001.001
+
+Everything in v1.001.000, with this build's own changes on top:
+
+- **Faster CPU emulation.** The JIT looks a guest page up in a direct table of ready offsets; nearby A64 accesses share one lookup; ordered and exclusive reads are plain loads; FCMP flags, DMB and CBZ/TBZ branches take shorter code; the register allocator hands out R13 and moves values out of the way into free registers.
+- **Checked fastmem.** Guest memory can be reached directly through a window, with whole 2 MiB blocks as one large mapping; a site that keeps finding its page blocked goes back to the page-table path.
+- **Guest writes to GPU memory wait less.** A guest write no longer waits for a cache lock the GPU thread holds: it is deferred and applied before the next draw, and a later write to the same page joins it. A write to a GPU-tracked buffer also marks the next 64 buffer pages, as the guest's own first writes to them would.
+- **Large textures upload only what changed.** When the guest rewrites part of a large texture, only the block rows it changed are uploaded.
+- **GPU command interpreter.** Incrementing runs of store-only registers are handled in one pass.
+- **Zen 2 code generation and ThinLTO** for the graphics code.
+- **Vertex input fixes.** Instanced vertex streams with frequency 0 advance per vertex with dynamic vertex input, and vertex shaders that read no attribute get a static vertex input (scenes drawn in one flat colour in one game).
+- **Development builds** log the commit that runs, slow frames thread by thread, slow texture uploads and the GPU thread's stack samples.
+
 ## v1.001.000
 
 - **A new launcher.** The menu was rebuilt. Five sections sit on a rail at the left (Home, Library, Multiplayer, Settings, About): L1 and R1 go from one to the next, and Left from a screen's edge opens the rail. Home is built around the game to continue, with its cover and what it runs with. The Library shows your games as covers, with the chosen game's details beside them. A game's settings are a page of their own, and Settings is a board of tiles.
