@@ -66,6 +66,7 @@
 #include "prosperoeden/version.h"
 extern "C" void ps5_opengl_heap_snapshot(const char*, unsigned);
 extern "C" std::int64_t sceKernelGetDirectMemorySize();
+extern "C" std::int32_t sceKernelAvailableFlexibleMemorySize(std::size_t*);
 #else
 #include <malloc.h>
 #include "mock_devices.h"
@@ -756,6 +757,25 @@ int main(int argc, char** argv) {
         }
         Common::Log::Start();
         SCOPE_EXIT { Common::Log::Stop(); };
+#ifdef PS5_NATIVE
+        {
+            // The pool the guest's memory, the JIT, the heap and the Vulkan heaps share. A PS5 Pro
+            // gives 13,504 MiB to a title with attribute3 bit 22 (sce_sys/param.json) and 12,288 MiB
+            // without it (base PS5 memory; system software 13.60): the line says which one this run has.
+            // The app has a second pool, flexible memory: the program itself, the system's
+            // libraries and what they allocate. 448 MiB unless kernel.flexibleMemorySize in
+            // sce_sys/param.json says otherwise, and what that pool is smaller by, this one is
+            // larger by; so a Pro is told by 13 GiB, which no setting of the other pool reaches
+            // on a base console.
+            const std::int64_t pool = sceKernelGetDirectMemorySize();
+            const bool pro = pool > (std::int64_t{13} << 30);
+            std::size_t flexible = 0;
+            (void)sceKernelAvailableFlexibleMemorySize(&flexible);
+            Eden::Report("memory", ("direct memory pool " + std::to_string(pool >> 20) + " MiB, PS5 Pro memory mode " +
+                                    (pro ? "active" : "inactive") + ", flexible memory free " +
+                                    std::to_string(flexible >> 20) + " MiB").c_str());
+        }
+#endif
         #ifdef EDEN_PS5_OPENGL
         Settings::values.renderer_backend = backend == Eden::GraphicsBackend::Vulkan ?
             Settings::RendererBackend::Vulkan : Settings::RendererBackend::OpenGL_GLSL;
@@ -856,6 +876,9 @@ int main(int argc, char** argv) {
                 } else if (entry.starts_with("slow_frame_ms=")) {
                     // Frames slower than this are logged one by one (EDEN_SLOW_FRAME; 0 = off).
                     Eden::Performance::slow_frame_ms = static_cast<unsigned>(std::min(1000UL, std::strtoul(entry.c_str() + 14, nullptr, 10)));
+                } else if (entry == "gc_scan=upstream") {
+                    // Eden's rule: the collector's budget counts visits, not evictions.
+                    Eden::Performance::gc_count_visits = true;
                 } else if (entry.starts_with("dispatch_draws=")) {
                     // Draws between Vulkan worker hand-offs: a power of two from 8 (upstream) to 512.
                     const unsigned long draws = std::strtoul(entry.c_str() + 15, nullptr, 10);
@@ -1327,7 +1350,8 @@ int main(int argc, char** argv) {
             const auto controls = Eden::PreferencesFor(game_title);
             Settings::values.vibration_enabled.SetValue(controls.vibration);
             pad->SetMapping(controls.mapping);
-            Eden::Report("launch", (std::string("Controls: vibration ") + (controls.vibration ? "on" : "off") +
+            Eden::Report("launch", (std::string("Controls: vibration ") +
+                                    (controls.vibration ? std::to_string(controls.vibration_strength) + "%" : "off") +
                                     ", buttons " + (controls.mapping == Eden::kDefaultMapping ? std::string("as usual") :
                                     Eden::Settings::MappingJson(controls.mapping).dump())).c_str());
             // One Pro Controller per signed-in user's DualSense; later changes apply mid-game.
@@ -1343,16 +1367,17 @@ int main(int argc, char** argv) {
                 player.connected = handheld ? false : index == 0 || (connected & (1u << index)) != 0;
                 player.controller_type = handheld ? Settings::ControllerType::ProController :
                                                     Eden::ControllerSetting(controls.controller);
-                // DualSense rumble (headless/pad.cpp) at Eden's full strength.
+                // DualSense rumble (headless/pad.cpp) at the strength of Settings > Controls: a
+                // percentage of what the game asks for.
                 player.vibration_enabled = true;
-                player.vibration_strength = 100;
+                player.vibration_strength = controls.vibration_strength;
             }
             {
                 auto& player = Settings::values.players.GetValue()[8];  // Eden's handheld controller
                 player.connected = handheld;
                 player.controller_type = Settings::ControllerType::Handheld;
                 player.vibration_enabled = true;
-                player.vibration_strength = 100;
+                player.vibration_strength = controls.vibration_strength;
             }
             if (controls.controller >= 0)
                 Eden::Report("launch", (std::string("Controller type: ") +

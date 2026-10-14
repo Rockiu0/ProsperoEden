@@ -2,9 +2,9 @@
 
 What changed in each release of ProsperoEden, newest first. A release's notes on GitHub are its section here.
 
-## v1.001.001
+## v1.002.001
 
-Everything in v1.001.000, with this build's own changes on top:
+Everything in v1.002.000, with this build's own changes on top:
 
 - **Faster CPU emulation.** The JIT looks a guest page up in a direct table of ready offsets; nearby A64 accesses share one lookup; ordered and exclusive reads are plain loads; FCMP flags, DMB and CBZ/TBZ branches take shorter code; the register allocator hands out R13 and moves values out of the way into free registers.
 - **Checked fastmem.** Guest memory can be reached directly through a window, with whole 2 MiB blocks as one large mapping; a site that keeps finding its page blocked goes back to the page-table path.
@@ -14,6 +14,26 @@ Everything in v1.001.000, with this build's own changes on top:
 - **Zen 2 code generation and ThinLTO** for the graphics code.
 - **Vertex input fixes.** Instanced vertex streams with frequency 0 advance per vertex with dynamic vertex input, and vertex shaders that read no attribute get a static vertex input (scenes drawn in one flat colour in one game).
 - **Development builds** log the commit that runs, slow frames thread by thread, slow texture uploads and the GPU thread's stack samples.
+
+## v1.002.000
+
+- **More free memory for demanding games.** The console's memory is one pool shared by the emulated console, the emulator itself and the graphics, and part of it was held without being used. The emulated console's memory, the code caches and a reserve on the system's side now take memory only when they need it. A large open-world game at 2x has about 3.5 GiB free during play instead of 2.2 GiB, at the same frame rate, so a long session runs out of memory far later.
+- **PS5 Pro memory mode.** On a PS5 Pro, ProsperoEden asks for the larger memory pool the console offers: 13.5 GiB instead of 12 GiB. A line at launch (`memory:` in `stderr.log`) says whether it is active. Contributed by [OverkillLabs](https://github.com/OverkillLabs3).
+- **"Ran out of graphics memory" less often above 1x.** The part that frees textures no game is using could stop looking before it had freed anything, so graphics memory filled up although much of it could be freed. Contributed by [mzet97](https://github.com/mzet97).
+- **Vibration strength (new setting).** **Settings > Controls > Vibration strength** sets how strong the DualSense vibrates: 25%, 50%, 75% or 100% of what a game asks for. The controller answers each change with a short vibration at the new strength, so the level is chosen by feel.
+- **A game without your language starts in English.** With a language chosen that a game does not have, the game started in the next language of the console's own order: with Brazilian Portuguese that was Spanish. It now gets the chosen language or a variant of it when it has one, and English otherwise.
+- **The FPS overlay is a small system monitor.** Turned on in **Settings > Video > FPS overlay** (or in a game's own settings), it shows over the game: the graphics backend, the frame rate against the game's own, the frame time, each of the four emulated CPU cores, the GPU's busy time measured by the GPU itself, the memory taken of the pool and the graphics' part of it, for example `VLK 30/60FPS 34.6MS CPU 92% 45% 38% 3% GPU 71% MEM 7.7/12.1G GFX 4.1G`. **Settings > Video > Overlay options** turns each piece on or off, sets its size, position and colours, and with **CPU by core** off shows only the busiest core; a game's settings can give it its own size and position. Contributed by [Bauls Deep](https://github.com/bawsdeep).
+- **Variable refresh rate on older system software.** On system software 6.02 the console did not know the way ProsperoEden declared a variable refresh rate and listed the app without one. It is now declared the way older system software knows.
+
+**Thanks** to the people whose work is in this release:
+
+- [OverkillLabs](https://github.com/OverkillLabs3), for PS5 Pro memory mode, measured on a PS5 Pro.
+- [Bauls Deep](https://github.com/bawsdeep), for the FPS overlay's new look as a system monitor, with its options and the settings per game.
+- [mzet97](https://github.com/mzet97), for finding and fixing why the texture collector stopped freeing graphics memory.
+- [Mihawk](https://github.com/mihawk-99), for the measurements of the console's memory pools that the memory work builds on, and for the Vulkan driver all of this runs on.
+- [tonysantosl](https://github.com/tonysantosl), for reporting the language that games fell back to, and [zh522130](https://github.com/zh522130), for asking for a vibration that can be turned down.
+
+And to everyone who tests ProsperoEden on their own console and reports what they find.
 
 ## v1.001.000
 
