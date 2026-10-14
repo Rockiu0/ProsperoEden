@@ -45,8 +45,8 @@ for eden_patch in tools/eden-patches/*.diff; do
     if patch -d "$eden" -p1 -R --dry-run -s -f < "$eden_patch" >/dev/null 2>&1; then continue; fi
     step "Eden patch $(basename "$eden_patch")"
     if ! patch -d "$eden" -p1 -N --dry-run -s -f < "$eden_patch" >/dev/null 2>&1; then
-        sed -n 's|^+++ b/||p' "$eden_patch" | sed 's|^|mirror-5f142c7926d0c7fcbbd0ce30794d72f638a43b2a/|' |
-            xargs tar -xzf .deps/eden-5f142c79.tar.gz --strip-components=1 -C "$eden"
+        sed -n 's|^+++ b/||p' "$eden_patch" | sed 's|^|*/|' |
+            xargs tar -xzf ".deps/$eden_archive" --wildcards --strip-components=1 -C "$eden"
     fi
     patch -d "$eden" -p1 -N -s < "$eden_patch" || { echo "$eden_patch does not apply to Eden's source" >&2; exit 1; }
 done
